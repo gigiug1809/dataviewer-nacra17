@@ -12,6 +12,7 @@ const Home = {
     page.append(h('div', { class: 'topbar' },
       h('div', { class: 'brand' }, h('div', { class: 'brand-mark', html: ICON_BOAT }), h('div', null, h('h1', null, 'Dataviewer Nacra 17'), h('div', { class: 'lib-path' }, Store.root ? ['Libreria: ', h('b', null, Store.name)] : 'Analisi delle uscite: video, dati e eventi'))),
       h('div', { class: 'sp' }),
+      installButton(),
       Store.root ? h('button', { class: 'btn ghost', onclick: () => this.changeLib() }, 'Cambia cartella') : null,
       h('button', { class: 'icon-btn', title: 'Tema chiaro / scuro', 'aria-label': 'Tema chiaro o scuro', onclick: toggleTheme }, '◐')));
 
@@ -74,9 +75,24 @@ const Home = {
     const box = h('div', { class: 'welcome' });
     page.append(box);
     if (!Store.supported) {
-      box.append(h('div', { class: 'card' }, h('h2', null, 'Apri l\'app con Google Chrome'),
-        h('p', { class: 'muted', style: { marginTop: '8px' } }, 'Questo browser non permette di lavorare con le cartelle del disco. Usa Google Chrome (o Edge) sul Mac: i video e i dati restano sul tuo disco, niente viene caricato online.'),
-        h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn', onclick: () => this.tryOPFS() }, 'Prova comunque con la memoria del browser'))));
+      const ua = navigator.userAgent;
+      const safari = /Safari/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox/.test(ua);
+      const webApp = navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+      const mobile = /iPhone|iPad|Android/i.test(ua) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua));
+      const url = location.origin + location.pathname;
+      const copy = h('button', { class: 'btn primary', onclick: async () => {
+        try { await navigator.clipboard.writeText(url); copy.textContent = 'Link copiato ✓'; }
+        catch (e) { prompt('Copia questo link:', url); }
+      } }, 'Copia il link');
+      const where = mobile ? 'Sei sul telefono o sul tablet.' : safari ? (webApp ? 'L\'hai aperto da un\'app del Dock che funziona con Safari (per esempio l\'icona 98).' : 'Sei in Safari.') : 'Questo browser non permette di lavorare con le cartelle del disco.';
+      box.append(h('div', { class: 'card', style: { display: 'grid', gap: '12px' } },
+        h('h2', null, 'Il Dataviewer si usa con Google Chrome sul Mac'),
+        h('p', { class: 'muted' }, where + ' Il Dataviewer deve leggere video e dati dalle cartelle del disco, e questo lo permette solo Chrome (o Edge). Niente viene caricato online.'),
+        mobile ? h('p', { class: 'muted' }, 'Aprilo dal Mac: ' , h('code', null, url)) : h('ol', null,
+          h('li', null, 'Premi "Copia il link".'),
+          h('li', null, 'Apri Google Chrome, incolla il link nella barra dell\'indirizzo e premi Invio.'),
+          h('li', null, 'Per averlo nel Dock come app: in Chrome premi l\'icona "Installa" in fondo alla barra dell\'indirizzo (uno schermo con una freccia), oppure il pulsante "Installa come app" in alto nella libreria. Da lì in poi si apre sempre in Chrome.')),
+        h('div', { class: 'row' }, mobile ? null : copy, h('button', { class: 'btn ghost', onclick: () => this.tryOPFS() }, 'Prova qui con la memoria del browser'))));
       return;
     }
     if (rec && rec.kind === 'fs') {
@@ -115,4 +131,18 @@ function toggleTheme() {
   document.documentElement.dataset.theme = t;
   LS.set('theme', t);
   window.dispatchEvent(new Event('themechange'));
+}
+
+/* Installazione come app di Chrome (icona nel Dock, si apre sempre in Chrome) */
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; const b = document.getElementById('installBtn'); if (b) b.hidden = false; });
+window.addEventListener('appinstalled', () => { installPrompt = null; const b = document.getElementById('installBtn'); if (b) b.hidden = true; toast('Installato: trovi il Dataviewer tra le app, puoi tenerlo nel Dock.', 6000); });
+function installButton() {
+  return h('button', { id: 'installBtn', class: 'btn', hidden: !installPrompt, title: 'Aggiunge il Dataviewer alle app del Mac, con la sua icona', onclick: async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => {});
+    installPrompt = null;
+    const b = document.getElementById('installBtn'); if (b) b.hidden = true;
+  } }, 'Installa come app');
 }
