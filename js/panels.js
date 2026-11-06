@@ -730,3 +730,52 @@ class StatsPanel {
 }
 
 const PANEL_CLASSES = { video: VideoPanel, chart: ChartPanel, map: MapPanel, numbers: NumbersPanel, events: EventsPanel, stats: StatsPanel };
+
+/* =================== COPERTURA =================== */
+class CoveragePanel {
+  constructor(V, cfg) {
+    this.V = V; this.cfg = cfg; this.S = V.S;
+    this.el = h('div', { style: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', overflow: 'auto' } });
+    this.build();
+  }
+  title() { return 'Copertura: video e dati'; }
+  build() {
+    const S = this.S, cv = this.cov = coverage(S);
+    this.el.textContent = '';
+    const rows = [...cv.cams.map(c => ({ label: '🎥 ' + c.name, spans: c.spans, color: c.color })), ...cv.data.map(d => ({ label: '📈 ' + d.name, spans: d.spans, color: 'var(--muted)' })),
+      { label: 'Video + dati', spans: cv.both, color: 'var(--good)', strong: true }];
+    this.lanes = h('div', { style: { position: 'relative', padding: '6px 8px 2px', display: 'grid', gap: '3px', cursor: 'pointer' } });
+    const X = t => ((t - S.t0) / ((S.t1 - S.t0) || 1) * 100).toFixed(3) + '%';
+    for (const r of rows) {
+      const lane = h('div', { class: 'cover-lane', style: { height: r.strong ? '12px' : '8px' } });
+      for (const [a, b] of r.spans) lane.append(h('i', { style: { left: X(a), width: `max(2px, calc(${X(b)} - ${X(a)}))`, background: r.color } }));
+      this.lanes.append(h('div', { style: { display: 'grid', gridTemplateColumns: '110px 1fr', gap: '8px', alignItems: 'center', fontSize: '11px' } },
+        h('span', { style: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: r.strong ? 700 : 500 } }, r.label), lane));
+    }
+    this.cursor = h('div', { style: { position: 'absolute', top: '2px', bottom: '0', width: '2px', background: 'var(--cursor)', pointerEvents: 'none' } });
+    this.lanes.append(this.cursor);
+    this.lanes.addEventListener('mousedown', e => {
+      const lane = this.lanes.querySelector('.cover-lane'); if (!lane) return;
+      const r = lane.getBoundingClientRect(); const f = (e.clientX - r.left) / r.width;
+      if (f >= 0 && f <= 1) this.V.seek(S.t0 + f * (S.t1 - S.t0));
+    });
+    this.el.append(this.lanes);
+    const tot = cv.both.reduce((a, x) => a + x[1] - x[0], 0);
+    const list = h('div', { style: { padding: '4px 8px 8px', display: 'grid', gap: '4px' } });
+    if (!cv.allVid.length || !cv.allData.length) list.append(h('div', { class: 'stat' }, !cv.allVid.length ? 'In questa uscita non ci sono video.' : 'In questa uscita non ci sono file di dati (Garmin, Cyclops, Vakaros…): aggiungili in "Video e dati".'));
+    else if (!cv.both.length) list.append(h('div', { class: 'stat warn' }, 'Video e dati non si sovrappongono mai. Controlla l\'ora della camera o lo spostamento dei dati in "Video e dati".'));
+    else {
+      list.append(h('div', { class: 'stat' }, `${cv.both.length} ${cv.both.length === 1 ? 'tratto' : 'tratti'} con video e dati insieme · ${fmtDur(tot)} in tutto`));
+      cv.both.forEach(([a, b], i) => list.append(h('div', { class: 'row', style: { fontSize: '12px', gap: '6px' } },
+        h('span', { class: 'dot', style: { background: 'var(--good)' } }), h('span', { class: 'num' }, `${fmtClock(a)} – ${fmtClock(b)}`), h('span', { class: 'faint' }, fmtDur(b - a)), h('div', { class: 'sp' }),
+        h('button', { class: 'btn sm', onclick: () => this.V.seek(a + 1000) }, 'Vai'))));
+    }
+    this.el.append(list);
+  }
+  update(t) { const S = this.S; this.cursor.style.left = `calc(126px + (100% - 134px) * ${clamp((t - S.t0) / ((S.t1 - S.t0) || 1), 0, 1)})`; }
+  dataChanged() { this.build(); }
+  resize() {}
+  destroy() {}
+}
+PANEL_TYPES.coverage = { label: 'Copertura video e dati', icon: '▤' };
+PANEL_CLASSES.coverage = CoveragePanel;

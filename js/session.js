@@ -22,7 +22,7 @@ function theme() { return document.documentElement.dataset.theme === 'light' ? '
 function seriesColor(i) { const p = PALETTE[theme()]; return p[i % p.length]; }
 function eventColor(type) { const e = EVT[type]; return !e || e.slot < 0 ? (theme() === 'light' ? '#7a7a74' : '#a3a29a') : seriesColor(e.slot); }
 
-const SRC_PRIORITY = { Vakaros: 0, GPX: 1, CSV: 2, GoPro: 3, Cyclops: 4 };
+const SRC_PRIORITY = { Vakaros: 0, FIT: 1, GPX: 1, TCX: 1, CSV: 2, GoPro: 3, Cyclops: 4 };
 
 class Session {
   constructor(folder, meta) {
@@ -60,8 +60,13 @@ class Session {
   }
 
   async loadSource(src) {
+    if (TRACK_KINDS.includes(src.kind)) {
+      const f = await Store.file(this.path(src.file));
+      const track = readTrack(src.kind, src.kind === 'FIT' ? await f.arrayBuffer() : await f.text());
+      if (!src.columns) src.columns = guessTrackConfig(track).columns;
+      return buildTrackChannels(track, src, src.id, src.name);
+    }
     const text = await Store.readText(this.path(src.file));
-    if (src.kind === 'GPX') return parseGPX(text, src.id, src.name);
     const tab = parseTable(text), cols = analyzeCols(tab);
     return buildChannels(tab, cols, Object.assign({ baseDate: this.meta.date }, src), src.id, src.name);
   }
@@ -243,3 +248,39 @@ function chainChapters(clips) {
   clips.sort((a, b) => a.start - b.start);
 }
 const START_SRC_LABEL = { gps: 'GPS della GoPro', mvhd: 'ora registrata nel file', mtime: 'data di modifica del file', chain: 'segue il capitolo precedente', manual: 'impostata a mano' };
+
+/* ---------- Copertura: dove ci sono video, dove ci sono dati, dove ci sono entrambi ---------- */
+function mergeSpans(list, gap = 0) {
+  const s = list.filter(x => x[1] > x[0]).sort((a, b) => a[0] - b[0]), out = [];
+  for (const x of s) { const l = out[out.length - 1]; if (l && x[0] <= l[1] + gap) l[1] = Math.max(l[1], x[1]); else out.push([x[0], x[1]]); }
+  return out;
+}
+function intersectSpans(A, B) {
+  const out = []; let i = 0, j = 0;
+  while (i < A.length && j < B.length) {
+    const a = Math.max(A[i][0], B[j][0]), b = Math.min(A[i][1], B[j][1]);
+    if (b > a) out.push([a, b]);
+    if (A[i][1] < B[j][1]) i++; else j++;
+  }
+  return out;
+}
+function channelSpans(c, gap = 30000) {
+  const out = []; let a = c.t[0], prev = c.t[0];
+  for (let k = 1; k < c.t.length; k++) { if (c.t[k] - prev > gap) { out.push([a, prev]); a = c.t[k]; } prev = c.t[k]; }
+  out.push([a, prev]);
+  return out;
+}
+function coverage(S) {
+  const cams = S.meta.cameras.map((cam, i) => ({ id: cam.id, name: cam.name, color: seriesColor(i), spans: mergeSpans(cam.clips.map(cl => { const s = S.clipStart(cam, cl); return [s, s + cl.duration * 1000]; }), 2000) }));
+  const bySrc = new Map();
+  for (const c of S.channels) {
+    if (c.derived || c.src === 'calc') continue;
+    if (S.meta.cameras.some(cam => cam.id === c.src)) continue; // la telemetria della camera c'è solo dove c'è il video
+    if (!bySrc.has(c.src)) bySrc.set(c.src, { id: c.src, name: c.srcName, spans: [] });
+    bySrc.get(c.src).spans.push(...channelSpans(c));
+  }
+  const data = [...bySrc.values()].map(d => Object.assign(d, { spans: mergeSpans(d.spans, 5000) }));
+  const allVid = mergeSpans(cams.flatMap(c => c.spans)), allData = mergeSpans(data.flatMap(d => d.spans));
+  const both = intersectSpans(allVid, allData).filter(x => x[1] - x[0] >= 5000);
+  return { cams, data, both, allVid, allData };
+}

@@ -108,14 +108,15 @@ function guessRole(name, unit) {
   if (w('heading|hdg|yaw|prua|bussola|compass') || /^hdg/.test(n)) return 'hdg';
   if (w('heel|roll|sbandamento|sband')) return 'heel';
   if (w('pitch|trim|beccheggio')) return 'pitch';
+  if (w('heart ?rate|hr|bpm|battiti|fc|frequenza cardiaca|cardio')) return 'hr';
   if (w('twd')) return 'twd';
+  if (w('twa|angolo( al)? vento|wind ?angle')) return 'twa';
   if (w('tws|wind ?speed|vento')) return 'tws';
-  if (w('twa')) return 'twa';
   if (/load|carico|tension|force|forza|kg/.test(n) || /^(sensore )?\d{3,}$/.test(n) || /^(kg|kgf|daN|N|kN|lbs?)$/i.test(unit)) return 'load';
   return 'other';
 }
-const ROLE_LABEL = { time: 'Ora', lat: 'Latitudine', lon: 'Longitudine', sog: 'Velocità (SOG)', cog: 'Rotta (COG)', hdg: 'Prua (heading)', heel: 'Sbandamento', pitch: 'Beccheggio', load: 'Carico', twd: 'Direzione vento', tws: 'Intensità vento', twa: 'Angolo al vento', other: 'Altro' };
-const NICE_NAME = { lat: 'Latitudine', lon: 'Longitudine', sog: 'Velocità', cog: 'Rotta', hdg: 'Prua', heel: 'Sbandamento', pitch: 'Beccheggio', twd: 'Direzione vento', tws: 'Vento', twa: 'Angolo al vento' };
+const ROLE_LABEL = { time: 'Ora', hr: 'Frequenza cardiaca', lat: 'Latitudine', lon: 'Longitudine', sog: 'Velocità (SOG)', cog: 'Rotta (COG)', hdg: 'Prua (heading)', heel: 'Sbandamento', pitch: 'Beccheggio', load: 'Carico', twd: 'Direzione vento', tws: 'Intensità vento', twa: 'Angolo al vento', other: 'Altro' };
+const NICE_NAME = { hr: 'Frequenza cardiaca', lat: 'Latitudine', lon: 'Longitudine', sog: 'Velocità', cog: 'Rotta', hdg: 'Prua', heel: 'Sbandamento', pitch: 'Beccheggio', twd: 'Direzione vento', tws: 'Vento', twa: 'Angolo al vento' };
 const CIRCULAR = new Set(['cog', 'hdg', 'twd']);
 const EXCLUDE_RE = /^(id|#|n\.?|no\.?|index|indice|sample|campione|seq)$/i;
 

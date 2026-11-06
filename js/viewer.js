@@ -100,8 +100,44 @@ const Viewer = {
     const layout = (m.layout && m.layout.length ? m.layout : defaultLayout(S));
     for (const p of layout) this.addPanel(p, false);
     this.grid.on('change', () => this.layoutChanged());
-    if (!m.layout) { m.layout = this.layoutData(); S.save(); }
+    const firstOpen = !m.layout;
+    if (firstOpen) { m.layout = this.layoutData(); S.save(); }
+    this.checkNewData(firstOpen);
     this.requestDraw();
+  },
+  /* Dati arrivati dopo che il layout è stato fatto: li propongo per la dashboard */
+  checkNewData(firstOpen) {
+    const S = this.S, m = S.meta;
+    const usable = S.channels.filter(c => !c.derived && c.role !== 'lat' && c.role !== 'lon' && !S.meta.cameras.some(cam => cam.id === c.src)).map(c => c.id);
+    const shown = new Set(this.layoutData().flatMap(p => p.cfg.ids || []));
+    if (!m.view.seen) { m.view.seen = firstOpen ? usable : [...shown]; S.save(); }
+    const fresh = usable.filter(id => !m.view.seen.includes(id) && !shown.has(id));
+    if (!fresh.length) return;
+    const bySrc = new Map();
+    for (const id of fresh) { const c = S.ch(id); if (!bySrc.has(c.srcName)) bySrc.set(c.srcName, []); bySrc.get(c.srcName).push(c); }
+    const done = () => { m.view.seen = [...new Set([...m.view.seen, ...fresh])]; S.save(); bar.remove(); };
+    const bar = h('div', { class: 'row', style: { padding: '6px 10px', background: 'var(--accent-soft)', borderBottom: '1px solid var(--line)', fontSize: '13px' } },
+      h('b', null, 'Dati nuovi in questa uscita:'),
+      h('span', null, [...bySrc].map(([src, l]) => `${src} (${l.map(c => c.name).join(', ')})`).join(' · ')),
+      h('div', { class: 'sp' }),
+      h('button', { class: 'btn sm primary', onclick: () => { this.addToDashboard(bySrc); done(); } }, 'Aggiungi alla dashboard'),
+      h('button', { class: 'btn sm ghost', onclick: done }, 'Non ora'));
+    this.gridWrap.before(bar);
+  },
+  addToDashboard(bySrc) {
+    let last = null;
+    const empty = [...this.panels.values()].filter(r => r.type === 'chart' && !(r.cfg.ids || []).length);
+    for (const [src, list] of bySrc) {
+      const ids = list.map(c => c.id), slot = empty.shift();
+      if (slot) { slot.cfg.ids = ids; slot.cfg.title = src; slot.inst.cfg = slot.cfg; slot.inst.build(); last = slot; }
+      else last = this.addPanel({ type: 'chart', w: 12, h: 8, cfg: { title: src, ids } });
+    }
+    const nums = [...this.panels.values()].find(r => r.type === 'numbers');
+    const top = [...bySrc.values()].flat().filter(c => ['hr', 'sog', 'load', 'heel', 'pitch'].includes(c.role)).slice(0, 4);
+    if (nums && top.length) { nums.cfg.ids = [...new Set([...(nums.cfg.ids || []), ...top.map(c => c.id)])]; nums.inst.cfg = nums.cfg; nums.inst.build(); }
+    this.layoutChanged();
+    if (last) setTimeout(() => last.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
+    toast('Aggiunti: un grafico per ogni file nuovo' + (nums && top.length ? ' e le grandezze principali nel pannello Numeri' : '') + '. Spostali dove vuoi trascinando la barra del titolo.', 7000);
   },
   cellH() { const r = this.gridWrap ? this.gridWrap.clientHeight : window.innerHeight - 150; return Math.max(16, Math.floor((r - 8) / ROWS)); },
   fitGrid() { if (!this.grid) return; this.grid.cellHeight(this.cellH()); this.drawTimeline(); },
@@ -167,7 +203,7 @@ const Viewer = {
     const items = Object.entries(PANEL_TYPES).map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => {
       const cfg = {};
       if (type === 'video') { const used = [...this.panels.values()].filter(r => r.type === 'video').map(r => r.cfg.cam); const c = this.S.meta.cameras.find(c => !used.includes(c.id)) || this.S.meta.cameras[0]; cfg.cam = c && c.id; }
-      const sz = { video: [8, 10], chart: [8, 8], map: [7, 9], numbers: [5, 8], events: [8, 9], stats: [6, 7] }[type];
+      const sz = { video: [8, 10], chart: [8, 8], map: [7, 9], numbers: [5, 8], events: [8, 9], stats: [6, 7], coverage: [8, 5] }[type] || [6, 6];
       const rec = this.addPanel({ type, w: sz[0], h: sz[1], cfg });
       if (rec) setTimeout(() => rec.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
       if (rec && ['chart', 'numbers', 'stats'].includes(type)) this.panelSettings(rec.inst);
@@ -332,6 +368,9 @@ const Viewer = {
       for (const cl of cam.clips) { const a = X(S.clipStart(cam, cl)), b = X(S.clipStart(cam, cl) + cl.duration * 1000); ctx.fillRect(a, y, Math.max(2, b - a - 1), rowH); }
       y += rowH + 2;
     });
+    // dove ci sono insieme video e dati
+    if (!this._cov || this._covSeq !== S.channels.length + ':' + S.meta.cameras.map(c => c.offset).join()) { this._cov = coverage(S); this._covSeq = S.channels.length + ':' + S.meta.cameras.map(c => c.offset).join(); }
+    if (this._cov.both.length) { ctx.fillStyle = col('--good'); for (const [a, b] of this._cov.both) ctx.fillRect(X(a), y, Math.max(2, X(b) - X(a)), 3); y += 5; }
     // copertura dei dati
     ctx.fillStyle = col('--surface-3'); ctx.fillRect(L, y, R - L, 3);
     ctx.fillStyle = col('--muted');
@@ -507,21 +546,23 @@ function defaultLayout(S) {
   const pick = (...lists) => [...new Set(lists.flat())].filter(Boolean);
   const sog = S.sog ? [S.sog.id] : [];
   const loads = ids('load');
+  const hr = ids('hr').slice(0, 1);
   const heel = ids('heel').slice(0, 1), pitch = ids('pitch').slice(0, 1);
   const twa = S.ch('calc:twa') ? ['calc:twa'] : [], vmg = S.ch('calc:vmg') ? ['calc:vmg'] : [];
   const cogId = S.cog ? [S.cog.id] : [];
-  const nums = pick(sog, vmg, cogId, twa, heel, pitch, loads).slice(0, 8);
+  const nums = pick(sog, hr, vmg, cogId, twa, heel, pitch, loads).slice(0, 8);
   const cams = S.meta.cameras;
   const L = [];
   L.push({ type: 'numbers', x: 0, y: 0, w: 5, h: 13, cfg: { ids: nums } });
-  if (cams.length === 0) L.push({ type: 'chart', x: 5, y: 0, w: 19, h: 13, cfg: { title: 'Velocità e carichi', ids: pick(sog, vmg, loads) } });
+  if (cams.length === 0) L.push({ type: 'chart', x: 5, y: 0, w: 19, h: 13, cfg: { title: 'Velocità e carichi', ids: pick(sog, vmg, loads, hr) } });
   else {
     if (cams.length === 1) L.push({ type: 'video', x: 5, y: 0, w: 11, h: 13, cfg: { cam: cams[0].id } });
     else if (cams.length === 2) { L.push({ type: 'video', x: 5, y: 0, w: 6, h: 13, cfg: { cam: cams[0].id } }); L.push({ type: 'video', x: 11, y: 0, w: 5, h: 13, cfg: { cam: cams[1].id } }); }
     else cams.slice(0, 4).forEach((c, i) => L.push({ type: 'video', x: 5 + (i % 2) * 6 - (i % 2 ? 1 : 0), y: Math.floor(i / 2) * 7, w: i % 2 ? 6 : 5, h: i < 2 ? 7 : 6, cfg: { cam: c.id } }));
-    L.push({ type: 'chart', x: 16, y: 0, w: 8, h: 13, cfg: { title: 'Velocità e carichi', ids: pick(sog, vmg, loads) } });
+    L.push({ type: 'chart', x: 16, y: 0, w: 8, h: 13, cfg: { title: 'Velocità e carichi', ids: pick(sog, vmg, loads, hr) } });
   }
-  L.push({ type: 'events', x: 0, y: 13, w: 8, h: 11, cfg: {} });
+  L.push({ type: 'events', x: 0, y: 13, w: 8, h: 6, cfg: {} });
+  L.push({ type: 'coverage', x: 0, y: 19, w: 8, h: 5, cfg: {} });
   L.push({ type: 'map', x: 8, y: 13, w: 8, h: 11, cfg: {} });
   const att = pick(heel, pitch, ids('heel'), ids('pitch'), ids('other').filter(id => /:acc$/.test(id)).slice(0, 1));
   L.push(att.length ? { type: 'chart', x: 16, y: 13, w: 8, h: 11, cfg: { title: 'Assetto', ids: att } }

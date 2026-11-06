@@ -1,7 +1,7 @@
 /* Pagina "Video e dati": scheda dell'uscita, caricamento di video e file di dati, controllo della sincronizzazione */
 'use strict';
 const VIDEO_RE = /\.(mp4|mov|m4v|lrv)$/i;
-const DATA_RE = /\.(csv|txt|tsv|gpx)$/i;
+const DATA_RE = /\.(csv|txt|tsv|gpx|fit|tcx|zip)$/i;
 
 const Editor = {
   folder: null, meta: null, tabs: new Map(), jobs: new Map(), channels: new Map(), targetCam: '',
@@ -252,37 +252,63 @@ const Editor = {
   renderData(sec = $('#secData')) {
     if (!sec) return;
     sec.textContent = '';
-    const input = h('input', { type: 'file', accept: '.csv,.txt,.tsv,.gpx,text/csv', multiple: true, hidden: true, onchange: e => { this.addData([...e.target.files]); e.target.value = ''; } });
+    const input = h('input', { type: 'file', accept: '.csv,.txt,.tsv,.gpx,.fit,.tcx,.zip,text/csv', multiple: true, hidden: true, onchange: e => { this.addData([...e.target.files]); e.target.value = ''; } });
     const drop = h('div', { class: 'drop' },
-      h('div', null, h('b', null, 'Trascina qui i file di dati'), ' — CSV della cella di carico Cyclops, export del Vakaros, GPX del telefono o dell\'orologio, qualsiasi CSV con una colonna ora'),
-      h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn', onclick: () => input.click() }, 'Scegli i file…')), input);
+      h('div', null, h('b', null, 'Trascina qui i file di dati')),
+      h('div', { class: 'small' }, 'Orologio Garmin (lo .zip di "Esporta originale", oppure .fit, .tcx, .gpx) · cella di carico Cyclops (.csv) · Vakaros (.csv) · GPX del telefono · qualsiasi CSV con una colonna ora'),
+      h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn', onclick: () => input.click() }, 'Scegli i file…'), h('button', { class: 'btn ghost', onclick: () => this.garminHelp() }, 'Come scarico i dati dal Garmin?')), input);
     this.dropZone(drop, files => this.addData(files.filter(f => DATA_RE.test(f.name)), files));
     sec.append(h('div', { class: 'ed-sec-head' }, h('h2', null, h('span', { class: 'step' }, '3'), 'Dati'),
-      h('span', { class: 'stat' }, 'L\'app riconosce da sola la colonna dell\'ora e le grandezze. Controlla nomi, unità e ruoli.')), drop);
+      h('span', { class: 'stat' }, 'Per ogni file l\'app mostra cosa ha trovato, con un\'anteprima di ogni grandezza. Togli la spunta a quello che non ti serve.')), drop);
     for (const src of this.meta.sources) sec.append(this.srcCard(src));
+  },
+  garminHelp(list) {
+    const sail = (list || []).filter(a => /vela|sail/i.test(a.type + ' ' + a.title));
+    const near = sail.filter(a => a.date && a.date.slice(0, 10) === this.meta.date);
+    modal({ title: list ? 'Questo è l\'elenco delle attività, non i dati' : 'Scaricare i dati dal Garmin', wide: true, body: h('div', { style: { display: 'grid', gap: '12px' } },
+      list ? h('p', null, `Il file contiene ${list.length} attività, una per riga, con solo medie e massimi (FC media, velocità max…). Per vedere i dati nel tempo, con battiti, velocità e posizione secondo per secondo, serve il file della singola attività.`) : null,
+      h('ol', { style: { margin: 0, paddingLeft: '20px', lineHeight: 1.7 } },
+        h('li', null, 'Sul computer apri ', h('b', null, 'connect.garmin.com'), ' e vai su Attività.'),
+        h('li', null, 'Apri l\'uscita in barca (tipo "Navigazione a vela").'),
+        h('li', null, 'In alto a destra premi l\'icona dell\'ingranaggio ⚙ e scegli ', h('b', null, '"Esporta originale"'), '.'),
+        h('li', null, 'Scarichi un file .zip: trascinalo qui così com\'è, senza aprirlo.')),
+      h('p', { class: 'muted' }, 'Dentro c\'è il file .fit con tutto quello che l\'orologio ha registrato: posizione GPS, velocità, frequenza cardiaca, temperatura, frequenza respiratoria se l\'orologio la misura, e i campi delle app di vela installate sull\'orologio. Vanno bene anche "Esporta in TCX" o "Esporta in GPX", ma contengono meno grandezze.'),
+      sail.length ? h('div', null, h('b', null, 'Uscite in barca nel file che hai caricato:'),
+        h('ul', { style: { margin: '6px 0 0', paddingLeft: '20px' } }, sail.map(a => h('li', { style: near.includes(a) ? { fontWeight: 700 } : null }, `${a.date} · ${a.title || a.type}${a.dur ? ' · ' + a.dur : ''}${near.includes(a) ? '  ← stesso giorno di questa uscita' : ''}`)))) : null),
+      actions: [{ label: 'Ho capito', kind: 'primary' }] });
   },
   async addData(files, all = []) {
     const vids = all.filter(f => VIDEO_RE.test(f.name));
     if (vids.length) this.addVideos(vids);
     for (const file of files) {
       try {
-        let dest = `dati/${file.name}`;
-        if (this.meta.sources.some(s => s.file === dest)) { toast(`${file.name} è già nell'uscita.`); continue; }
-        const text = await file.text();
+        let name = file.name, kind = trackKindOf(name), data;
+        if (/\.zip$/i.test(name)) {
+          const z = await unzipFirst(await file.arrayBuffer(), /\.(fit|tcx|gpx)$/i);
+          if (!z) throw new Error('Nello ZIP non c\'è un file .fit, .tcx o .gpx.');
+          name = z.name.split('/').pop(); kind = trackKindOf(name); data = kind === 'FIT' ? z.data : new TextDecoder().decode(z.data);
+        } else data = kind === 'FIT' ? await file.arrayBuffer() : await file.text();
+        const dest = `dati/${name}`;
+        if (this.meta.sources.some(s => s.file === dest)) { toast(`${name} è già nell'uscita.`); continue; }
         let src;
-        if (/\.gpx$/i.test(file.name)) {
-          parseGPX(text, 'x', 'x');
-          src = { id: uid('s'), file: dest, name: file.name.replace(/\.\w+$/, ''), kind: 'GPX', offset: 0 };
+        if (kind) {
+          const track = readTrack(kind, data);
+          src = Object.assign({ id: uid('s'), file: dest, kind, name: kind === 'FIT' ? 'Garmin' : name.replace(/\.\w+$/, '') }, guessTrackConfig(track));
+          this.tabs.set(src.id, { track });
         } else {
-          const tab = parseTable(text), cols = analyzeCols(tab);
+          const tab = parseTable(data), cols = analyzeCols(tab);
+          const list = garminActivityList(tab);
+          if (list) { this.garminHelp(list); continue; }
           const cfg = guessSourceConfig(tab, cols);
-          src = Object.assign({ id: uid('s'), file: dest, name: cfg.kind === 'CSV' ? file.name.replace(/\.\w+$/, '') : cfg.kind === 'Vakaros' ? 'Vakaros Atlas 2' : 'Cyclops' }, cfg);
+          src = Object.assign({ id: uid('s'), file: dest, name: cfg.kind === 'CSV' ? name.replace(/\.\w+$/, '') : cfg.kind === 'Vakaros' ? 'Vakaros Atlas 2' : 'Cyclops' }, cfg);
           this.tabs.set(src.id, { tab, cols });
         }
-        await Store.writeText(`${this.folder}/${dest}`, text);
+        await Store.writeText(`${this.folder}/${dest}`, data);
         this.meta.sources.push(src);
         this.save();
-        this.rebuild(src);
+        this.rebuild(src, false);
+        const n = ((this.channels.get(src.id) || {}).list || []).length;
+        toast(n ? `${src.name}: trovate ${n} grandezze. Nel viewer le trovi in "+ Pannello" o nell'avviso dei dati nuovi.` : `${src.name}: nessun dato letto, controlla le impostazioni qui sotto.`, 6000);
       } catch (e) { toast(`${file.name}: ${errMsg(e)}`, 8000, 'bad'); }
     }
     this.renderData(); this.renderCheck();
@@ -290,9 +316,15 @@ const Editor = {
   async parseAll() {
     for (const src of this.meta.sources) {
       try {
-        const text = await Store.readText(`${this.folder}/${src.file}`);
-        if (src.kind !== 'GPX') { const tab = parseTable(text), cols = analyzeCols(tab); this.tabs.set(src.id, { tab, cols }); }
-        else this.tabs.set(src.id, { gpx: text });
+        if (TRACK_KINDS.includes(src.kind)) {
+          const f = await Store.file(`${this.folder}/${src.file}`);
+          const track = readTrack(src.kind, src.kind === 'FIT' ? await f.arrayBuffer() : await f.text());
+          if (!src.columns) src.columns = guessTrackConfig(track).columns;
+          this.tabs.set(src.id, { track });
+        } else {
+          const text = await Store.readText(`${this.folder}/${src.file}`);
+          const tab = parseTable(text), cols = analyzeCols(tab); this.tabs.set(src.id, { tab, cols });
+        }
         this.rebuild(src, false);
       } catch (e) { this.channels.set(src.id, { error: errMsg(e) }); }
     }
@@ -302,24 +334,43 @@ const Editor = {
     const T = this.tabs.get(src.id);
     try {
       let list;
-      if (src.kind === 'GPX') list = T && T.gpx ? parseGPX(T.gpx, src.id, src.name) : [];
+      if (T && T.track) list = buildTrackChannels(T.track, src, src.id, src.name);
       else list = buildChannels(T.tab, T.cols, Object.assign({ baseDate: this.meta.date }, src), src.id, src.name);
       this.channels.set(src.id, { list });
     } catch (e) { this.channels.set(src.id, { error: errMsg(e), list: [] }); }
-    if (rerender) { this.renderCheck(); const st = $(`#st-${src.id}`); if (st) st.replaceWith(this.srcStat(src)); }
+    if (rerender) {
+      this.renderCheck();
+      const st = $(`#st-${src.id}`); if (st) st.replaceWith(this.srcStat(src));
+      for (const c of src.columns || []) { const el = document.getElementById(`pv-${src.id}-${c.col}`); if (el) el.replaceWith(this.preview(src, c)); }
+    }
   },
   srcStat(src) {
     const r = this.channels.get(src.id) || {};
     if (r.error) return h('div', { class: 'stat bad', id: `st-${src.id}` }, r.error);
     const list = r.list || [];
-    if (!list.length) return h('div', { class: 'stat warn', id: `st-${src.id}` }, 'Nessun canale letto: scegli la colonna dell\'ora e almeno una grandezza.');
+    if (!list.length) return h('div', { class: 'stat warn', id: `st-${src.id}` }, 'Nessun dato letto. Controlla la colonna dell\'ora e metti la spunta su almeno una grandezza.');
     const a = Math.min(...list.map(c => c.t[0])), b = Math.max(...list.map(c => c.t[c.t.length - 1]));
     const hz = 1000 / list[0].step;
     const T = this.tabs.get(src.id);
-    const otherDay = ymdOf(a) !== this.meta.date;
-    return h('div', { class: 'stat ' + (otherDay ? 'warn' : ''), id: `st-${src.id}` },
-      `${T && T.tab ? T.tab.data.length.toLocaleString('it-IT') + ' righe · ' : ''}${list.length} canali · ${hz >= 1 ? fmtNum(hz, hz < 10 ? 1 : 0) + ' Hz' : 'un campione ogni ' + fmtNum(1 / hz, 0) + ' s'} · dalle ${fmtClock(a)} alle ${fmtClock(b)} (${fmtDur(b - a)})`,
-      otherDay ? ` · attenzione: i dati sono del ${new Date(a).toLocaleDateString('it-IT')}, non del giorno dell'uscita` : '');
+    const otherDay = ymdOf(a) !== this.meta.date, manyDays = b - a > 2 * 86400e3;
+    return h('div', { class: 'stat ' + (otherDay || manyDays ? 'warn' : 'good'), id: `st-${src.id}` },
+      `✓ ${list.filter(c => c.role !== 'lat' && c.role !== 'lon').length} grandezze${list.some(c => c.role === 'lat') ? ' + posizione GPS' : ''} · ${T && T.tab ? T.tab.data.length.toLocaleString('it-IT') + ' righe · ' : ''}${hz >= 1 ? fmtNum(hz, hz < 10 ? 1 : 0) + ' campioni al secondo' : 'un campione ogni ' + fmtNum(1 / hz, 0) + ' s'} · dalle ${fmtClock(a)} alle ${fmtClock(b)} (${fmtDur(b - a)})`,
+      manyDays ? ' · attenzione: le righe coprono più giorni, sembra un riepilogo e non una registrazione' : otherDay ? ` · attenzione: i dati sono del ${new Date(a).toLocaleDateString('it-IT')}, non del giorno dell'uscita` : '');
+  },
+  // piccolo grafico di una grandezza, per vedere subito se i dati ci sono
+  preview(src, c) {
+    const id = `pv-${src.id}-${c.col}`;
+    const list = (this.channels.get(src.id) || {}).list || [];
+    const ch = list.find(x => x.id === `${src.id}:${c.col}`);
+    if (!c.use) return h('span', { id, class: 'faint small' }, 'non usata');
+    if (!ch) return h('span', { id, class: 'stat warn' }, 'nessun valore');
+    const W = 120, H = 24, cv = h('canvas', { width: W * 2, height: H * 2, style: { width: W + 'px', height: H + 'px', verticalAlign: 'middle' } });
+    const ctx = cv.getContext('2d'), n = ch.t.length, st = Math.max(1, Math.floor(n / W));
+    const lo = ch.min, hi = ch.max === ch.min ? ch.min + 1 : ch.max;
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent'); ctx.lineWidth = 2; ctx.beginPath();
+    for (let i = 0, k = 0; i < n; i += st, k++) { const x = (ch.t[i] - ch.t[0]) / ((ch.t[n - 1] - ch.t[0]) || 1) * W * 2, y = H * 2 - 2 - (ch.v[i] - lo) / (hi - lo) * (H * 2 - 4); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.stroke();
+    return h('span', { id, class: 'row', style: { gap: '8px', flexWrap: 'nowrap' } }, cv, h('span', { class: 'stat num' }, ch.circular ? '' : `${fmtVal(ch, ch.min)} – ${fmtVal(ch, ch.max)}`));
   },
   srcCard(src) {
     const card = h('div', { class: 'src-card' });
@@ -327,29 +378,31 @@ const Editor = {
     name.addEventListener('change', () => { src.name = name.value || src.file; this.save(); this.renderCheck(); });
     const others = this.posSources().filter(s => s.id !== src.id);
     const hasPos = this.posSources().some(s => s.id === src.id);
+    const T = this.tabs.get(src.id);
+    const isTrack = TRACK_KINDS.includes(src.kind);
     card.append(h('div', { class: 'src-head' }, h('span', { class: 'badge' }, src.kind), name, h('span', { class: 'stat' }, src.file.split('/').pop()), h('div', { class: 'sp' }),
       h('button', { class: 'btn sm danger', onclick: async () => { if (await confirmBox('Togliere il file?', `"${src.name}" esce dall'uscita. Il file resta nella cartella dati.`, 'Togli', true)) { this.meta.sources = this.meta.sources.filter(s => s !== src); this.channels.delete(src.id); this.save(); this.renderData(); this.renderCheck(); } } }, 'Togli')));
     card.append(this.srcStat(src));
-    const T = this.tabs.get(src.id);
-    const ctl = h('div', { class: 'row' });
+    const ctl = h('div', { class: 'row', style: { alignItems: 'flex-start' } });
+    const help = (el, text) => h('div', { style: { display: 'grid', gap: '4px', maxWidth: '260px' } }, el, h('span', { class: 'faint small' }, text));
     if (T && T.tab) {
       const tsel = h('select', null, T.cols.map(c => h('option', { value: c.j }, c.name + (c.time ? '' : ' (non sembra un orario)'))));
       tsel.value = src.timeCol;
       tsel.addEventListener('change', () => { src.timeCol = Number(tsel.value); this.save(); this.rebuild(src); });
-      ctl.append(h('label', { class: 'f' }, 'Colonna dell\'ora', tsel));
-    }
-    const tz = h('div', { class: 'seg' }, [['local', 'Ora locale'], ['utc', 'UTC']].map(([v, l]) => h('button', { class: (src.tz || 'local') === v ? 'on' : '', onclick: () => { src.tz = v; this.save(); this.rebuild(src); this.renderData(); } }, l)));
-    if (src.kind !== 'GPX') ctl.append(h('div', { class: 'f' }, 'Orari del file in', tz));
+      ctl.append(help(h('label', { class: 'f' }, 'Colonna dell\'ora', tsel), 'La colonna che dice a che ora è stata presa ogni riga. Di solito la trovo da solo.'));
+      const tz = h('div', { class: 'seg' }, [['local', 'Ora locale'], ['utc', 'UTC']].map(([v, l]) => h('button', { class: (src.tz || 'local') === v ? 'on' : '', onclick: () => { src.tz = v; this.save(); this.rebuild(src); this.renderData(); } }, l)));
+      ctl.append(help(h('div', { class: 'f' }, 'Gli orari del file sono in', tz), 'Quasi tutti gli strumenti usano l\'ora locale. Se video e dati risultano spostati di 1 o 2 ore, prova UTC.'));
+    } else if (isTrack) ctl.append(help(h('div', { class: 'f' }, 'Orari', h('b', { style: { color: 'var(--fg)', fontWeight: 600 } }, 'presi dal GPS (esatti)')), 'I file FIT, TCX e GPX hanno l\'ora del satellite: di solito non serve correggere niente.'));
     const off = h('input', { type: 'number', step: 0.1, value: src.offset || 0, style: { width: '110px' } });
     off.addEventListener('change', () => { src.offset = parseFloat(off.value) || 0; this.save(); this.rebuild(src); });
-    ctl.append(h('label', { class: 'f' }, 'Spostamento (s)', off));
+    ctl.append(help(h('label', { class: 'f' }, 'Spostamento (secondi)', off), 'Se l\'orologio dello strumento era avanti metti un numero negativo, se era indietro positivo.'));
     if (hasPos && others.length) {
       const ref = h('select', null, others.map(s => h('option', { value: s.id }, s.name)));
-      ctl.append(h('div', { class: 'f' }, 'Allinea l\'orologio con il GPS di', h('div', { class: 'row' }, ref, h('button', { class: 'btn sm', onclick: () => this.align(src, ref.value, off) }, 'Allinea'))));
+      ctl.append(help(h('div', { class: 'f' }, 'Allinea l\'orologio con il GPS di', h('div', { class: 'row' }, ref, h('button', { class: 'btn sm', onclick: () => this.align(src, ref.value, off) }, 'Allinea'))), 'Confronta le due tracce e trova da solo lo spostamento giusto.'));
     }
     card.append(ctl);
-    if (src.columns && T && T.tab) {
-      const tb = h('table', { class: 'tbl' }, h('thead', null, h('tr', null, ['Usa', 'Colonna', 'Nome', 'Unità', 'Grandezza', '× fattore', '+ costante'].map(x => h('th', null, x)))));
+    if (src.columns && T && (T.tab || T.track)) {
+      const tb = h('table', { class: 'tbl' }, h('thead', null, h('tr', null, ['Usa', isTrack ? 'Nel file' : 'Colonna', 'Nome', 'Unità', 'Grandezza', 'Anteprima e valori', '× fattore', '+ costante'].map(x => h('th', null, x)))));
       const body = h('tbody');
       for (const c of src.columns) {
         const ch = (k, el, num) => { el.addEventListener('change', () => { c[k] = el.type === 'checkbox' ? el.checked : num ? (parseFloat(el.value) || (k === 'k' ? 1 : 0)) : el.value; this.save(); this.rebuild(src); }); return el; };
@@ -361,13 +414,14 @@ const Editor = {
           h('td', null, ch('name', h('input', { type: 'text', value: c.name, style: { width: '160px' } }))),
           h('td', null, ch('unit', h('input', { type: 'text', value: c.unit, style: { width: '64px' } }))),
           h('td', null, ch('role', role)),
-          h('td', null, ch('k', h('input', { type: 'number', step: 'any', value: c.k ?? 1, style: { width: '80px' } }), true)),
-          h('td', null, ch('add', h('input', { type: 'number', step: 'any', value: c.add ?? 0, style: { width: '80px' } }), true))));
+          h('td', null, this.preview(src, c)),
+          h('td', null, ch('k', h('input', { type: 'number', step: 'any', value: c.k ?? 1, style: { width: '70px' } }), true)),
+          h('td', null, ch('add', h('input', { type: 'number', step: 'any', value: c.add ?? 0, style: { width: '70px' } }), true))));
       }
       tb.append(body);
       card.append(h('div', { class: 'tbl-wrap' }, tb));
-      card.append(h('p', { class: 'stat' }, 'Per una velocità in m/s usa fattore 1,944 e unità kn. Per tarare la cella di carico usa la costante (es. −12 per togliere la tara).'));
-      card.append(h('details', null, h('summary', null, 'Prime righe del file'), h('pre', { class: 'preview' }, T.tab.preview)));
+      card.append(h('p', { class: 'stat' }, '"Grandezza" dice all\'app cos\'è ogni colonna (velocità, posizione, carico…): serve per mappa, manovre e calcoli. Fattore e costante correggono i valori: per una velocità in m/s usa fattore 1,944 e unità kn; per la tara della cella di carico usa la costante (es. −12).'));
+      if (T.tab) card.append(h('details', null, h('summary', null, 'Prime righe del file'), h('pre', { class: 'preview' }, T.tab.preview)));
     }
     return card;
   },
@@ -412,6 +466,8 @@ const Editor = {
       rows.push({ label: src.name, kind: 'src', color: 'var(--muted)', spans });
     });
     if (!rows.length) { sec.append(h('p', { class: 'muted' }, 'Carica almeno un video o un file di dati.')); return; }
+    const both = intersectSpans(mergeSpans(rows.filter(r => r.kind === 'cam').flatMap(r => r.spans)), mergeSpans(rows.filter(r => r.kind === 'src').flatMap(r => r.spans))).filter(x => x[1] - x[0] >= 5000);
+    if (rows.some(r => r.kind === 'cam') && rows.some(r => r.kind === 'src')) rows.push({ label: 'Video + dati', kind: 'both', color: 'var(--good)', spans: both });
     let t0 = Infinity, t1 = -Infinity;
     for (const r of rows) for (const [a, b] of r.spans) { t0 = Math.min(t0, a); t1 = Math.max(t1, b); }
     const pad = (t1 - t0) * .03 || 60000; t0 -= pad; t1 += pad;
@@ -420,7 +476,7 @@ const Editor = {
     for (const r of rows) {
       const lane = h('div', { class: 'cover-lane' });
       for (const [a, b] of r.spans) lane.append(h('i', { style: { left: x(a), width: `calc(${x(b)} - ${x(a)} + 2px)`, background: r.color }, title: `${fmtClock(a)} – ${fmtClock(b)}` }));
-      wrap.append(h('div', { class: 'cover-row' }, h('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.kind === 'cam' ? '🎥 ' : '📈 ', r.label), lane));
+      wrap.append(h('div', { class: 'cover-row' }, h('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: r.kind === 'both' ? 700 : 400 } }, r.kind === 'cam' ? '🎥 ' : r.kind === 'src' ? '📈 ' : '✓ ', r.label), lane));
     }
     const axis = h('div', { class: 'cover-axis' });
     const span = t1 - t0, stepM = [1, 2, 5, 10, 15, 30, 60, 120].find(mm => span / (mm * 60000) <= 9) || 240;
@@ -436,7 +492,8 @@ const Editor = {
     for (const s of srcRows) if (camRows.length && !camRows.some(c => overlap(c, s))) notes.push(`I dati "${s.label}" non si sovrappongono a nessun video.`);
     if (!m.twd) notes.push('Manca la direzione del vento: le manovre verranno segnate come "manovra" invece di virata o strambata.');
     for (const n of notes) sec.append(h('p', { class: 'stat warn' }, n));
-    if (!notes.length) sec.append(h('p', { class: 'stat good' }, 'Tutto in ordine: video e dati si sovrappongono.'));
+    if (both.length) sec.append(h('p', { class: 'stat good' }, `✓ Video e dati insieme per ${fmtDur(both.reduce((a, x) => a + x[1] - x[0], 0))} (riga verde): lì puoi analizzare le manovre con le immagini.`));
+    else if (!notes.length) sec.append(h('p', { class: 'stat good' }, 'Tutto in ordine.'));
   },
 
   dropZone(el, onFiles) {
