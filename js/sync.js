@@ -4,7 +4,7 @@
       con le virate e strambate viste dal GPS (rotta che cambia). Lo sfasamento che le fa coincidere
       è l'errore dell'orologio della camera, trovato al decimo di secondo. */
 'use strict';
-const GPS_TIME_KINDS = new Set(['FIT', 'TCX', 'GPX', 'Vakaros', 'GoPro']);
+const GPS_TIME_KINDS = new Set(['FIT', 'TCX', 'GPX', 'Vakaros', 'GoPro', 'iPhone']);
 
 // media dei campioni in finestre regolari
 function windowMeans(ch, t0, n, step) {

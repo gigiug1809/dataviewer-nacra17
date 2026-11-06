@@ -71,11 +71,14 @@ const TIME_NAME = /time|date|ora|data|stamp|utc|tempo|orario/i;
 function parseTable(text) {
   const lines = text.replace(/^﻿/, '').split(/\r\n|\n|\r/);
   const delim = detectDelim(lines);
+  // Cyclops chiude ogni riga con un separatore: lì l'ultima cella vuota non è una colonna.
+  // Lo decido sul file intero, non riga per riga (altrimenti si perdono le righe che finiscono con un valore vuoto)
+  const sample = lines.filter(l => l.trim()).slice(0, 200);
+  const trailing = sample.filter(l => l.replace(/[ \r]+$/, '').endsWith(delim)).length >= sample.length * 0.9;
   const rows = lines.map(l => {
     if (!l.trim()) return null;
     const r = splitCSVLine(l, delim);
-    // Cyclops chiude ogni riga con un separatore: l'ultima cella vuota non è una colonna
-    if (r.length > 1 && r[r.length - 1] === '' && l.replace(/[ \r]+$/, '').endsWith(delim)) r.pop();
+    if (trailing && r.length > 1 && r[r.length - 1] === '') r.pop();
     return r;
   });
   const freq = new Map();
@@ -116,6 +119,15 @@ function guessRole(name, unit) {
   return 'other';
 }
 const ROLE_LABEL = { time: 'Ora', hr: 'Frequenza cardiaca', lat: 'Latitudine', lon: 'Longitudine', sog: 'Velocità (SOG)', cog: 'Rotta (COG)', hdg: 'Prua (heading)', heel: 'Sbandamento', pitch: 'Beccheggio', load: 'Carico', twd: 'Direzione vento', tws: 'Intensità vento', twa: 'Angolo al vento', other: 'Altro' };
+// colonne del Registratore N17 per iPhone: [nome, unità, ruolo, usata di default]
+const PHONE_COLS = {
+  lat: ['Latitudine', '°', 'lat', true], lon: ['Longitudine', '°', 'lon', true],
+  gps_speed_kn: ['Velocità GPS', 'kn', 'sog', true], gps_course: ['Rotta GPS', '°', 'cog', true], gps_hacc_m: ['Precisione GPS', 'm', 'other', false], gps_alt_m: ['Quota GPS', 'm', 'other', false],
+  heel_deg: ['Sbandamento', '°', 'heel', true], pitch_deg: ['Beccheggio', '°', 'pitch', true], heading_deg: ['Prua (bussola)', '°', 'hdg', true],
+  roll_rate_dps: ['Velocità di rollio', '°/s', 'other', true], pitch_rate_dps: ['Velocità di beccheggio', '°/s', 'other', false], yaw_rate_dps: ['Velocità di rotazione', '°/s', 'other', true],
+  acc_surge_g: ['Accelerazione avanti', 'g', 'other', true], acc_sway_g: ['Accelerazione laterale', 'g', 'other', false], acc_heave_g: ['Accelerazione verticale', 'g', 'other', true],
+  acc_peak_g: ['Picco di accelerazione', 'g', 'other', true], pressure_kpa: ['Pressione atmosferica', 'kPa', 'other', false]
+};
 const NICE_NAME = { hr: 'Frequenza cardiaca', lat: 'Latitudine', lon: 'Longitudine', sog: 'Velocità', cog: 'Rotta', hdg: 'Prua', heel: 'Sbandamento', pitch: 'Beccheggio', twd: 'Direzione vento', tws: 'Vento', twa: 'Angolo al vento' };
 const CIRCULAR = new Set(['cog', 'hdg', 'twd']);
 const EXCLUDE_RE = /^(id|#|n\.?|no\.?|index|indice|sample|campione|seq)$/i;
@@ -125,6 +137,8 @@ function analyzeCols(tab) {
     const vals = [];
     const stepI = Math.max(1, Math.floor(tab.data.length / 400));
     for (let i = 0; i < tab.data.length && vals.length < 400; i += stepI) { const v = tab.data[i][j]; if (v !== '') vals.push(v); }
+    // colonne scritte solo su alcune righe (es. GPS a 1 Hz in mezzo ai sensori a 25 Hz): le cerco in tutto il file
+    if (vals.length < 40) { vals.length = 0; for (let i = 0; i < tab.data.length && vals.length < 400; i++) { const v = tab.data[i][j]; if (v !== '') vals.push(v); } }
     const nNum = vals.filter(isNumLike).length;
     const numeric = vals.length > 0 && nNum / vals.length >= 0.8;
     let time = null;
@@ -176,6 +190,12 @@ function guessSourceConfig(tab, cols) {
     if (!nice) continue;
     seen[c.role] = (seen[c.role] || 0) + 1;
     c.name = seen[c.role] > 1 ? `${nice} (${c.col})` : nice;
+  }
+  const isPhone = tab.header.includes('time_utc') && tab.header.includes('heel_deg');
+  if (isPhone) {
+    // file del Registratore N17 per iPhone: nomi e ruoli già noti
+    for (const c of columns) { const m = PHONE_COLS[c.col]; if (m) Object.assign(c, { name: m[0], unit: m[1], role: m[2], use: m[3] }); else c.use = false; }
+    return { timeCol: tc ? tc.j : -1, sensorCol: -1, tz: 'utc', offset: 0, kind: 'iPhone', columns };
   }
   const kind = isCyclops ? 'Cyclops' : isVakaros ? 'Vakaros' : 'CSV';
   return { timeCol: tc ? tc.j : -1, sensorCol: sensorCol ? sensorCol.j : -1, tz: 'local', offset: 0, kind, columns };

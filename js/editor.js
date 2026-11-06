@@ -328,7 +328,7 @@ const Editor = {
           const list = garminActivityList(tab);
           if (list) { this.garminHelp(list); continue; }
           const cfg = guessSourceConfig(tab, cols);
-          src = Object.assign({ id: uid('s'), file: dest, name: cfg.kind === 'CSV' ? name.replace(/\.\w+$/, '') : cfg.kind === 'Vakaros' ? 'Vakaros Atlas 2' : 'Cyclops' }, cfg);
+          src = Object.assign({ id: uid('s'), file: dest, name: cfg.kind === 'CSV' ? name.replace(/\.\w+$/, '') : cfg.kind === 'Vakaros' ? 'Vakaros Atlas 2' : cfg.kind === 'iPhone' ? 'iPhone' : 'Cyclops' }, cfg);
           this.tabs.set(src.id, { tab, cols });
         }
         await Store.writeText(`${this.folder}/${dest}`, data);

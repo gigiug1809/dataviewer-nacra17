@@ -22,7 +22,7 @@ function theme() { return document.documentElement.dataset.theme === 'light' ? '
 function seriesColor(i) { const p = PALETTE[theme()]; return p[i % p.length]; }
 function eventColor(type) { const e = EVT[type]; return !e || e.slot < 0 ? (theme() === 'light' ? '#7a7a74' : '#a3a29a') : seriesColor(e.slot); }
 
-const SRC_PRIORITY = { Vakaros: 0, FIT: 1, GPX: 1, TCX: 1, CSV: 2, GoPro: 3, Cyclops: 4 };
+const SRC_PRIORITY = { Vakaros: 0, iPhone: 0, FIT: 1, GPX: 1, TCX: 1, CSV: 2, GoPro: 3, Cyclops: 4 };
 
 class Session {
   constructor(folder, meta) {
