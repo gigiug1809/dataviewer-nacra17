@@ -1,0 +1,555 @@
+/* Viewer: griglia di pannelli spostabili, orologio comune, barra del tempo, eventi */
+'use strict';
+const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
+const COLS = 24, ROWS = 24;
+
+(function gridCSS() {
+  // GridStack porta lo stile solo per 12 colonne: genero quello per 24
+  let css = '';
+  for (let i = 0; i <= COLS; i++) {
+    css += `.gs-${COLS}>.grid-stack-item[gs-x="${i}"]{left:${(i / COLS * 100).toFixed(4)}%}`;
+    if (i) css += `.gs-${COLS}>.grid-stack-item[gs-w="${i}"]{width:${(i / COLS * 100).toFixed(4)}%}`;
+  }
+  document.head.append(h('style', null, css));
+})();
+
+const Viewer = {
+  S: null, open_: false,
+  async open(folder) {
+    this.close();
+    this.open_ = true;
+    const root = $('#view-viewer');
+    root.textContent = '';
+    const load = h('div', { class: 'loading' }, h('div', null, h('b', null, 'Apro l\'uscita…'), h('div', { class: 'progress', style: { width: '100%' } }, h('i')), h('span', { class: 'small' }, '')));
+    root.append(load);
+    const meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
+    if (!meta) { toast('Uscita non trovata.'); Router.go('#/'); return; }
+    meta.view = meta.view || {};
+    const S = this.S = new Session(folder, meta);
+    await S.load((msg, p) => { load.querySelector('span').textContent = msg; load.querySelector('.progress i').style.width = (p * 100) + '%'; });
+    if (!this.open_ || this.S !== S) return;
+    load.remove();
+    S.onSave = st => { const d = $('#saveDot'); if (d) { d.className = 'save-dot ' + st; d.textContent = st === 'saved' ? 'Salvato' : st === 'error' ? 'Errore' : 'Salvo…'; } };
+    this.playing = false; this.rate = 1; this.scrubbing = false; this.master = null; this.drawSeq = 0;
+    this.win = meta.view.win ?? 60000;
+    this.preroll = meta.view.preroll ?? 5000;
+    this.inT = meta.view.inT ?? null; this.outT = meta.view.outT ?? null;
+    this.locked = !!meta.view.locked;
+    this.undo = [];
+    const firstVid = meta.cameras.flatMap(c => c.clips.map(cl => S.clipStart(c, cl))).sort((a, b) => a - b)[0];
+    this.t = clamp(meta.view.t ?? firstVid ?? S.t0, S.t0, S.t1);
+    this.buildUI(root);
+    if (S.loadErrors.length) toast('Alcuni file non sono stati letti: ' + S.loadErrors.join(' · '), 10000, 'bad');
+    this.loop = this.loop.bind(this);
+    this.last = performance.now();
+    this.raf = requestAnimationFrame(this.loop);
+    this.onKey = this.key.bind(this);
+    document.addEventListener('keydown', this.onKey);
+    this.onResize = debounce(() => this.fitGrid(), 120);
+    window.addEventListener('resize', this.onResize);
+    this.onTheme = () => this.rebuildPanels();
+    window.addEventListener('themechange', this.onTheme);
+  },
+  close() {
+    if (!this.open_) return;
+    this.open_ = false;
+    cancelAnimationFrame(this.raf);
+    document.removeEventListener('keydown', this.onKey);
+    window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('themechange', this.onTheme);
+    if (this.S) { this.saveView(); this.S.saveNow(); }
+    for (const p of (this.panels || new Map()).values()) { try { p.ro && p.ro.disconnect(); p.inst.destroy(); } catch (e) { /* già chiuso */ } }
+    this.panels = new Map();
+    if (this.grid) { this.grid.destroy(false); this.grid = null; }
+    if (this.S) this.S.dispose();
+    this.S = null;
+    $('#view-viewer').textContent = '';
+  },
+
+  /* ---------- Interfaccia ---------- */
+  buildUI(root) {
+    const S = this.S, m = S.meta;
+    const winSel = h('select', { title: 'Finestra di tempo dei grafici', style: { minHeight: '30px' } }, WINDOWS.map(([v, l]) => h('option', { value: v }, l)));
+    winSel.value = String(this.win);
+    winSel.onchange = () => { this.win = Number(winSel.value); this.requestDraw(); this.saveViewSoon(); };
+    this.winSel = winSel;
+    const lockBtn = h('button', { class: 'icon-btn' + (this.locked ? ' on' : ''), title: 'Blocca la disposizione dei pannelli', 'aria-label': 'Blocca la disposizione' }, this.locked ? '🔒' : '🔓');
+    lockBtn.onclick = () => { this.locked = !this.locked; lockBtn.classList.toggle('on', this.locked); lockBtn.textContent = this.locked ? '🔒' : '🔓'; this.grid.setStatic(this.locked); this.gridEl.classList.toggle('locked', this.locked); this.saveViewSoon(); };
+    const top = h('div', { class: 'vtop' },
+      h('button', { class: 'btn ghost sm', onclick: () => Router.go('#/') }, '← Libreria'),
+      h('div', { class: 'title', title: m.title }, m.title || S.folder),
+      h('span', { class: 'faint small' }, fmtDateLong(m.date)),
+      h('span', { id: 'saveDot', class: 'save-dot' }, 'Salvato'),
+      h('div', { class: 'sp' }),
+      h('span', { class: 'small muted' }, 'Finestra'), winSel,
+      h('div', { class: 'sep' }),
+      h('button', { class: 'btn sm', onclick: e => this.addMenu(e.currentTarget) }, '+ Pannello'),
+      h('button', { class: 'btn sm', onclick: e => this.layoutMenu(e.currentTarget) }, 'Layout'),
+      lockBtn,
+      h('div', { class: 'sep' }),
+      h('button', { class: 'btn sm', onclick: () => Router.go(`#/uscita/${encodeURIComponent(S.folder)}/dati`) }, 'Video e dati'),
+      h('button', { class: 'icon-btn', title: 'Scheda dell\'uscita', 'aria-label': 'Scheda dell\'uscita', onclick: () => this.infoBox() }, 'ⓘ'),
+      h('button', { class: 'icon-btn', title: 'Tema chiaro / scuro', 'aria-label': 'Tema', onclick: toggleTheme }, '◐'),
+      h('button', { class: 'icon-btn', title: 'Scorciatoie da tastiera', 'aria-label': 'Scorciatoie', onclick: () => this.help() }, '?'));
+    this.gridWrap = h('div', { class: 'vgrid-wrap' });
+    this.gridEl = h('div', { class: 'grid-stack' + (this.locked ? ' locked' : '') });
+    this.gridWrap.append(this.gridEl);
+    root.append(top, this.gridWrap, this.buildTimeline());
+    this.grid = GridStack.init({ column: COLS, cellHeight: this.cellH(), margin: 0, float: true, handle: '.pnl-head', animate: false, staticGrid: this.locked, resizable: { handles: 'e,se,s,sw,w' }, disableOneColumnMode: true, columnOpts: { breakpoints: [] } }, this.gridEl);
+    this.panels = new Map();
+    const layout = (m.layout && m.layout.length ? m.layout : defaultLayout(S));
+    for (const p of layout) this.addPanel(p, false);
+    this.grid.on('change', () => this.layoutChanged());
+    if (!m.layout) { m.layout = this.layoutData(); S.save(); }
+    this.requestDraw();
+  },
+  cellH() { const r = this.gridWrap ? this.gridWrap.clientHeight : window.innerHeight - 150; return Math.max(16, Math.floor((r - 8) / ROWS)); },
+  fitGrid() { if (!this.grid) return; this.grid.cellHeight(this.cellH()); this.drawTimeline(); },
+
+  addPanel(p, save = true) {
+    const id = p.id || uid('p');
+    const cfg = p.cfg || {};
+    const el = this.grid.addWidget({ x: p.x, y: p.y, w: p.w || 6, h: p.h || 8, id, autoPosition: p.x == null });
+    const content = el.querySelector('.grid-stack-item-content');
+    const Cls = PANEL_CLASSES[p.type];
+    if (!Cls) return;
+    const inst = new Cls(this, cfg);
+    const ttl = h('div', { class: 'ttl' }, inst.title());
+    const head = h('div', { class: 'pnl-head' }, ttl, ...(inst.headButtons ? inst.headButtons() : []),
+      h('button', { class: 'icon-btn', title: 'Impostazioni del pannello', 'aria-label': 'Impostazioni', html: ICONS.gear, onclick: () => this.panelSettings(inst) }),
+      h('button', { class: 'icon-btn', title: 'Chiudi il pannello', 'aria-label': 'Chiudi', html: ICONS.close, onclick: () => this.removePanel(id) }));
+    head.querySelectorAll('button,select').forEach(b => b.addEventListener('mousedown', e => e.stopPropagation()));
+    const body = h('div', { class: 'pnl-body' }, inst.el);
+    content.append(head, body);
+    const rec = { id, type: p.type, cfg, inst, el, ttl, body };
+    rec.ro = new ResizeObserver(debounce(() => { inst.resize(); this.requestDraw(); }, 60));
+    rec.ro.observe(body);
+    inst._rec = rec;
+    this.panels.set(id, rec);
+    if (save) this.layoutChanged();
+    this.requestDraw();
+    return rec;
+  },
+  removePanel(id) {
+    const r = this.panels.get(id);
+    if (!r) return;
+    r.ro.disconnect(); r.inst.destroy();
+    this.grid.removeWidget(r.el);
+    this.panels.delete(id);
+    this.layoutChanged();
+  },
+  rebuildPanels(filter = () => true) {
+    const layout = this.layoutData();
+    for (const p of layout) {
+      if (!filter(p)) continue;
+      const r = this.panels.get(p.id);
+      r.ro.disconnect(); r.inst.destroy(); this.grid.removeWidget(r.el); this.panels.delete(p.id);
+      this.addPanel(p, false);
+    }
+    this.requestDraw();
+  },
+  layoutData() {
+    const out = [];
+    for (const it of this.grid.getGridItems()) {
+      const n = it.gridstackNode, r = this.panels.get(n.id);
+      if (r) out.push({ id: n.id, type: r.type, x: n.x, y: n.y, w: n.w, h: n.h, cfg: r.cfg });
+    }
+    return out;
+  },
+  layoutChanged() { if (!this.S || !this.grid) return; this.S.meta.layout = this.layoutData(); this.S.save(); for (const r of this.panels.values()) r.ttl.textContent = r.inst.title(); },
+  layoutChangedSoon: debounce(function () { Viewer.layoutChanged(); }, 800),
+  panelSettings(inst) {
+    const st = inst.settings ? inst.settings() : null;
+    if (!st) return;
+    modal({ title: `Impostazioni · ${PANEL_TYPES[inst._rec.type].label}`, body: st.el, wide: true, actions: [{ label: 'Annulla' }, { label: 'Applica', kind: 'primary', run: () => { st.apply(); this.layoutChanged(); if (inst._rec.type === 'video') this.rebuildPanels(p => p.id === inst._rec.id); this.requestDraw(); } }] });
+  },
+  addMenu(anchor) {
+    const items = Object.entries(PANEL_TYPES).map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => {
+      const cfg = {};
+      if (type === 'video') { const used = [...this.panels.values()].filter(r => r.type === 'video').map(r => r.cfg.cam); const c = this.S.meta.cameras.find(c => !used.includes(c.id)) || this.S.meta.cameras[0]; cfg.cam = c && c.id; }
+      const sz = { video: [8, 10], chart: [8, 8], map: [7, 9], numbers: [5, 8], events: [8, 9], stats: [6, 7] }[type];
+      const rec = this.addPanel({ type, w: sz[0], h: sz[1], cfg });
+      if (rec) setTimeout(() => rec.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
+      if (rec && ['chart', 'numbers', 'stats'].includes(type)) this.panelSettings(rec.inst);
+    } }));
+    menu(anchor, items);
+  },
+  async layoutMenu(anchor) {
+    const lib = await Store.libSettings();
+    const items = [
+      { head: 'Modelli salvati' },
+      ...(lib.templates.length ? lib.templates.map(tp => ({ label: tp.name, run: () => this.applyTemplate(tp) })) : [{ label: 'Nessun modello salvato', disabled: true }]),
+      { sep: true },
+      { label: 'Salva questo layout come modello…', run: () => this.saveTemplate(lib) },
+      lib.templates.length ? { label: 'Elimina un modello…', run: () => this.deleteTemplate(lib) } : null,
+      { sep: true },
+      { label: 'Ripristina il layout predefinito', run: () => this.applyLayout(defaultLayout(this.S)) }
+    ].filter(Boolean);
+    menu(anchor, items);
+  },
+  applyLayout(layout) {
+    for (const r of this.panels.values()) { r.ro.disconnect(); r.inst.destroy(); }
+    this.grid.removeAll(true);
+    this.panels = new Map();
+    for (const p of layout) this.addPanel(Object.assign({}, p, { id: uid('p') }), false);
+    this.layoutChanged();
+  },
+  async saveTemplate(lib) {
+    const name = await promptBox('Salva il layout come modello', 'Nome del modello (es. "Bolina", "Analisi carichi")', '');
+    if (!name) return;
+    const layout = this.layoutData().map(p => ({ type: p.type, x: p.x, y: p.y, w: p.w, h: p.h, cfg: portableCfg(this.S, p.cfg) }));
+    lib.templates = lib.templates.filter(t => t.name !== name);
+    lib.templates.push({ name, layout });
+    await Store.saveLib(lib);
+    toast(`Modello "${name}" salvato: lo trovi in Layout in tutte le uscite.`);
+  },
+  async deleteTemplate(lib) {
+    const sel = h('select', { class: 'full' }, lib.templates.map(t => h('option', { value: t.name }, t.name)));
+    modal({ title: 'Elimina un modello', body: h('label', { class: 'f' }, 'Modello', sel), actions: [{ label: 'Annulla' }, { label: 'Elimina', kind: 'danger', run: async () => { lib.templates = lib.templates.filter(t => t.name !== sel.value); await Store.saveLib(lib); toast('Modello eliminato.'); } }] });
+  },
+  applyTemplate(tp) {
+    this.applyLayout(tp.layout.map(p => Object.assign({}, p, { cfg: resolveCfg(this.S, p.cfg, p.type) })));
+    toast(`Applicato il modello "${tp.name}".`);
+  },
+
+  /* ---------- Orologio ---------- */
+  requestDraw() { this.dirty = true; this.drawSeq++; },
+  seek(t) {
+    if (!this.S) return;
+    this.t = clamp(t, this.S.t0, this.S.t1);
+    this.anchor = { t: this.t, now: performance.now() };
+    this.dirty = true;
+    if (!this.playing) this.saveViewSoon();
+  },
+  play() {
+    if (this.t >= this.S.t1 - 100) this.t = this.S.t0;
+    this.playing = true; this.anchor = { t: this.t, now: performance.now() }; this.updatePlayBtn();
+  },
+  pause() { if (!this.playing) return; this.playing = false; this.master = null; this.updatePlayBtn(); this.dirty = true; this.saveViewSoon(); },
+  toggle() { this.playing ? this.pause() : this.play(); },
+  setRate(r) { this.rate = r; this.anchor = { t: this.t, now: performance.now() }; if (this.speedSel) this.speedSel.value = String(r); },
+  loop(now) {
+    if (!this.open_) return;
+    this.raf = requestAnimationFrame(this.loop);
+    if (this.playing) {
+      // l'orologio segue il video che sta suonando; senza video segue l'ora reale
+      this.master = null;
+      now = performance.now();
+      for (const r of this.panels.values()) if (r.type === 'video') { const mt = r.inst.masterTime(); if (mt != null) { this.master = r.inst; this.t = mt; this.anchor = { t: mt, now }; break; } }
+      if (!this.master) { if (!this.anchor || now - this.anchor.now > 2000) this.anchor = { t: this.t, now: now - 16 }; this.t = this.anchor.t + (now - this.anchor.now) * this.rate; this.anchor = { t: this.t, now }; }
+      if (this.t >= this.S.t1) { this.t = this.S.t1; this.pause(); }
+    }
+    if (this.playing || this.dirty) {
+      this.dirty = false;
+      for (const r of this.panels.values()) { try { r.inst.update(this.t, this.playing); } catch (e) { console.error(e); } }
+      this.drawTimeline();
+      this.timeEl.textContent = fmtClock(this.t, true);
+    }
+  },
+  saveView() { if (!this.S) return; Object.assign(this.S.meta.view, { t: Math.round(this.t), win: this.win, preroll: this.preroll, inT: this.inT, outT: this.outT, locked: this.locked }); },
+  saveViewSoon: debounce(function () { if (Viewer.S) { Viewer.saveView(); Viewer.S.save(); } }, 1500),
+
+  camOffsetChanged: debounce(async function (cam) {
+    const V = Viewer, S = V.S;
+    if (!S || !S.channels.some(c => c.src === cam.id)) return;
+    S.channels = S.channels.filter(c => c.src !== cam.id);
+    S.channels.push(...await S.loadCamTelemetry(cam));
+    S.derive();
+    V.rebuildPanels(p => p.type !== 'video');
+  }, 800),
+
+  /* ---------- Barra del tempo ---------- */
+  buildTimeline() {
+    const btn = (label, title, fn) => h('button', { class: 'icon-btn', title, 'aria-label': title, onclick: fn }, label);
+    this.playBtn = h('button', { class: 'btn primary sm', style: { minWidth: '44px' }, title: 'Play / pausa (spazio)', onclick: () => this.toggle() }, '▶');
+    this.speedSel = h('select', { title: 'Velocità di riproduzione' }, SPEEDS.map(s => h('option', { value: s }, `${String(s).replace('.', ',')}×`)));
+    this.speedSel.value = '1';
+    this.speedSel.onchange = () => this.setRate(Number(this.speedSel.value));
+    this.timeEl = h('div', { class: 'tl-time' }, '--:--:--');
+    this.rangeEl = h('span', { class: 'range-chip' });
+    this.tlCanvas = h('canvas');
+    this.tlHover = h('div', { class: 'tl-hover', hidden: true });
+    const wrap = h('div', { class: 'tl-canvas-wrap' }, this.tlCanvas, this.tlHover);
+    const tl = h('div', { class: 'tl' },
+      h('div', { class: 'tl-ctrl' },
+        btn('⏮', 'Evento precedente ( [ )', () => this.jumpEvent(-1)),
+        btn('−10', 'Indietro 10 s (Maiusc + ←)', () => this.seek(this.t - 10000)),
+        btn('◀', 'Indietro 1 s (←)', () => this.seek(this.t - 1000)),
+        this.playBtn,
+        btn('▶', 'Avanti 1 s (→)', () => this.seek(this.t + 1000)),
+        btn('+10', 'Avanti 10 s (Maiusc + →)', () => this.seek(this.t + 10000)),
+        btn('⏭', 'Evento successivo ( ] )', () => this.jumpEvent(1)),
+        this.speedSel, this.timeEl,
+        h('div', { class: 'sep' }),
+        h('button', { class: 'btn sm', title: 'Inizio selezione (I)', onclick: () => this.setIn() }, 'I'),
+        h('button', { class: 'btn sm', title: 'Fine selezione (O)', onclick: () => this.setOut() }, 'O'),
+        this.rangeEl,
+        h('div', { class: 'sp' }),
+        h('button', { class: 'btn sm', title: 'Aggiungi un evento a quest\'ora', onclick: () => this.addEventDialog() }, '+ Evento')),
+      wrap);
+    let dragging = false;
+    const tAt = e => { const r = this.tlCanvas.getBoundingClientRect(); return this.S.t0 + clamp((e.clientX - r.left - 8) / (r.width - 16), 0, 1) * (this.S.t1 - this.S.t0); };
+    wrap.addEventListener('mousedown', e => { dragging = true; this.scrubbing = true; this.seek(tAt(e)); e.preventDefault(); });
+    window.addEventListener('mousemove', e => {
+      if (dragging) this.seek(tAt(e));
+      if (e.target === this.tlCanvas || dragging) {
+        const r = this.tlCanvas.getBoundingClientRect(), t = tAt(e);
+        this.tlHover.hidden = false; this.tlHover.style.left = clamp(e.clientX - r.left, 30, r.width - 30) + 'px'; this.tlHover.textContent = fmtClock(t);
+      }
+    });
+    window.addEventListener('mouseup', () => { dragging = false; this.scrubbing = false; });
+    wrap.addEventListener('mouseleave', () => { if (!dragging) this.tlHover.hidden = true; });
+    this.updateRange();
+    return tl;
+  },
+  updatePlayBtn() { if (this.playBtn) this.playBtn.textContent = this.playing ? '❚❚' : '▶'; },
+  drawTimeline() {
+    const c = this.tlCanvas;
+    if (!c || !this.S) return;
+    const S = this.S, dpr = devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
+    if (!W) return;
+    if (c.width !== W * dpr || c.height !== H * dpr) { c.width = W * dpr; c.height = H * dpr; }
+    const ctx = c.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const cs = getComputedStyle(document.documentElement);
+    const col = k => cs.getPropertyValue(k).trim();
+    const L = 8, R = W - 8, X = t => L + (t - S.t0) / (S.t1 - S.t0) * (R - L);
+    // ore
+    ctx.font = '10px ' + col('--font'); ctx.fillStyle = col('--faint'); ctx.textAlign = 'center';
+    const span = S.t1 - S.t0, stepM = [1, 2, 5, 10, 15, 30, 60, 120].find(m => span / (m * 60000) <= Math.max(4, W / 90)) || 240;
+    ctx.strokeStyle = col('--grid');
+    for (let t = Math.ceil(S.t0 / (stepM * 60000)) * stepM * 60000; t < S.t1; t += stepM * 60000) {
+      const x = X(t); ctx.fillText(fmtClock(t).slice(0, 5), x, 9);
+      ctx.beginPath(); ctx.moveTo(x + .5, 12); ctx.lineTo(x + .5, H); ctx.stroke();
+    }
+    let y = 14;
+    const cams = S.meta.cameras;
+    const rowH = cams.length > 2 ? 5 : 7;
+    cams.forEach((cam, i) => {
+      ctx.fillStyle = col('--surface-3'); ctx.fillRect(L, y, R - L, rowH);
+      ctx.fillStyle = seriesColor(i);
+      for (const cl of cam.clips) { const a = X(S.clipStart(cam, cl)), b = X(S.clipStart(cam, cl) + cl.duration * 1000); ctx.fillRect(a, y, Math.max(2, b - a - 1), rowH); }
+      y += rowH + 2;
+    });
+    // copertura dei dati
+    ctx.fillStyle = col('--surface-3'); ctx.fillRect(L, y, R - L, 3);
+    ctx.fillStyle = col('--muted');
+    for (const ch of S.channels) { if (ch.role === 'lat' || ch.role === 'lon' || ch.derived) continue; ctx.fillRect(X(ch.t[0]), y, Math.max(1, X(ch.t[ch.t.length - 1]) - X(ch.t[0])), 3); }
+    y += 6;
+    // selezione
+    if (this.inT != null) {
+      const a = X(this.inT), b = this.outT != null ? X(this.outT) : a + 2;
+      ctx.fillStyle = col('--accent-soft'); ctx.fillRect(a, 12, b - a, H - 12);
+      ctx.fillStyle = col('--accent'); ctx.fillRect(a, 12, 1.5, H - 12); if (this.outT != null) ctx.fillRect(b - 1.5, 12, 1.5, H - 12);
+    }
+    // eventi
+    for (const ev of S.meta.events) {
+      const x = X(ev.t); ctx.fillStyle = eventColor(ev.type);
+      ctx.beginPath(); ctx.moveTo(x, H - 9); ctx.lineTo(x + 4, H - 1); ctx.lineTo(x - 4, H - 1); ctx.fill();
+    }
+    // cursore
+    const cx = X(this.t);
+    ctx.fillStyle = col('--cursor'); ctx.fillRect(cx - 1, 11, 2, H - 11);
+    ctx.beginPath(); ctx.moveTo(cx - 5, 11); ctx.lineTo(cx + 5, 11); ctx.lineTo(cx, 17); ctx.fill();
+  },
+  jumpEvent(dir) {
+    const ev = this.S.meta.events;
+    const ref = this.t + this.preroll * (dir > 0 ? 1 : 1);
+    const e = dir > 0 ? ev.find(e => e.t > ref + 500) : [...ev].reverse().find(e => e.t < ref - 1500);
+    if (e) this.seek(e.t - this.preroll);
+  },
+  setIn() { this.inT = this.t; if (this.outT != null && this.outT <= this.inT) this.outT = null; this.updateRange(); },
+  setOut() { if (this.inT == null || this.t <= this.inT) { toast('Prima segna l\'inizio della selezione con I.'); return; } this.outT = this.t; this.updateRange(); },
+  clearRange() { this.inT = this.outT = null; this.updateRange(); },
+  updateRange() {
+    if (!this.rangeEl) return;
+    this.rangeEl.textContent = '';
+    if (this.inT != null) this.rangeEl.append(`Selezione ${fmtClock(this.inT)}${this.outT != null ? ' – ' + fmtClock(this.outT) + ' (' + fmtDur(this.outT - this.inT) + ')' : ' – …'}`,
+      this.outT != null ? h('button', { class: 'btn sm', onclick: () => this.exportRange() }, 'Esporta CSV') : null,
+      h('button', { class: 'icon-btn', title: 'Togli la selezione (X)', 'aria-label': 'Togli la selezione', onclick: () => this.clearRange() }, '✕'));
+    this.requestDraw(); this.saveViewSoon();
+  },
+  exportRange() {
+    const S = this.S, a = this.inT, b = this.outT;
+    const chans = S.channels.filter(c => !c.circular || true);
+    const step = Math.max(100, Math.min(...chans.map(c => c.step)));
+    const lines = ['ora;' + chans.map(c => `${c.name}${c.unit ? ' (' + c.unit + ')' : ''} [${c.srcName}]`).join(';')];
+    for (let t = a; t <= b; t += step) {
+      const d = new Date(t);
+      lines.push(`${fmtClock(t)}.${String(d.getMilliseconds()).padStart(3, '0')};` + chans.map(c => { const v = interp(c, t); return isFinite(v) ? String(Math.round(v * 1e6) / 1e6).replace('.', ',') : ''; }).join(';'));
+    }
+    downloadText(`selezione ${S.meta.date} ${fmtClock(a).replace(/:/g, '.')}.csv`, '﻿' + lines.join('\n'));
+  },
+
+  /* ---------- Eventi ---------- */
+  eventsChanged() {
+    for (const r of this.panels.values()) if (r.inst.eventsChanged) r.inst.eventsChanged();
+    this.requestDraw();
+  },
+  quickEvent(type) {
+    const e = this.S.addEvent({ t: Math.round(this.t), type });
+    this.undo.push(e.id);
+    this.eventsChanged();
+    toast(`${EVT[type].label} alle ${fmtClock(e.t)} · ⌘Z per annullare`, 2500);
+  },
+  addEventDialog(type = 'nota') { this.editEvent({ t: Math.round(this.t), type, note: '' }, true); },
+  editEvent(ev, isNew = false) {
+    const wasPlaying = this.playing; this.pause();
+    const tsel = h('select', { class: 'full' }, EVENT_TYPES.map(e => h('option', { value: e.id }, e.label)));
+    tsel.value = ev.type;
+    const note = h('textarea', { rows: 3, placeholder: 'Cosa è successo? (es. ritardo in uscita, prodiere lento sul trapezio)' }); note.value = ev.note || '';
+    let t = ev.t;
+    const tl = h('b', { class: 'num' }, fmtClock(t, true));
+    const nudge = d => { t += d; tl.textContent = fmtClock(t, true); };
+    const body = h('div', { style: { display: 'grid', gap: '12px' } },
+      h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Ora'), tl, h('div', { class: 'sp' }), ...[-5000, -1000, 1000, 5000].map(d => h('button', { class: 'btn sm', onclick: () => nudge(d) }, (d > 0 ? '+' : '−') + Math.abs(d / 1000) + ' s')), h('button', { class: 'btn sm', onclick: () => { t = Math.round(this.t); tl.textContent = fmtClock(t, true); } }, 'Ora del cursore')),
+      h('label', { class: 'f' }, 'Tipo', tsel), h('label', { class: 'f' }, 'Nota', note));
+    note.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { m.box.querySelector('.modal-foot .primary').click(); } });
+    const m = modal({ title: isNew ? 'Nuovo evento' : 'Modifica evento', body, onClose: () => { if (wasPlaying && isNew) this.play(); }, actions: [
+      !isNew ? { label: 'Elimina', kind: 'danger', run: () => this.removeEvent(ev) } : null,
+      { label: 'Annulla' },
+      { label: 'Salva', kind: 'primary', run: () => {
+        if (isNew) { const e = this.S.addEvent({ t, type: tsel.value, note: note.value.trim() }); this.undo.push(e.id); }
+        else { ev.t = t; ev.type = tsel.value; ev.note = note.value.trim(); delete ev.auto; this.S.meta.events.sort((a, b) => a.t - b.t); this.S.save(); }
+        this.eventsChanged();
+      } }].filter(Boolean) });
+    setTimeout(() => note.focus(), 40);
+  },
+  removeEvent(ev) { this.S.removeEvent(ev.id); this.eventsChanged(); toast('Evento eliminato.', 2000); },
+  detectManeuvers() {
+    const S = this.S;
+    if (!S.cog) { toast('Per trovare le manovre servono posizioni GPS o una rotta (COG/heading).', 6000); return; }
+    const twd = parseFloat(S.meta.twd);
+    const found = detectManeuvers(S.cog, S.sog, twd);
+    let n = 0;
+    for (const f of found) {
+      if (S.meta.events.some(e => ['virata', 'strambata', 'manovra'].includes(e.type) && Math.abs(e.t - f.t) < 15000)) continue;
+      S.meta.events.push({ id: uid('e'), t: Math.round(f.t), type: f.type, note: '', auto: true });
+      n++;
+    }
+    S.meta.events.sort((a, b) => a.t - b.t); S.save();
+    this.eventsChanged();
+    toast(n ? `Trovate ${n} manovre nuove${isFinite(twd) ? '' : '. Indica la direzione del vento nella scheda dell\'uscita per distinguere virate e strambate'}.` : 'Nessuna manovra nuova trovata.', 7000);
+  },
+
+  /* ---------- Tastiera ---------- */
+  key(e) {
+    if (document.querySelector('.modal-back')) return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
+    const k = e.key;
+    if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'z') {
+      const id = this.undo.pop();
+      if (id) { this.S.removeEvent(id); this.eventsChanged(); toast('Evento annullato.', 1800); }
+      e.preventDefault(); return;
+    }
+    if (e.metaKey || e.ctrlKey || (e.altKey && !/^Arrow/.test(k))) return;
+    const frame = 1000 / 30;
+    switch (k) {
+      case ' ': this.toggle(); break;
+      case 'ArrowLeft': this.seek(this.t - (e.shiftKey ? 10000 : e.altKey ? frame : 1000)); break;
+      case 'ArrowRight': this.seek(this.t + (e.shiftKey ? 10000 : e.altKey ? frame : 1000)); break;
+      case ',': this.seek(this.t - frame); break;
+      case '.': this.seek(this.t + frame); break;
+      case 'ArrowUp': this.setRate(SPEEDS[Math.min(SPEEDS.length - 1, SPEEDS.indexOf(this.rate) + 1)]); break;
+      case 'ArrowDown': this.setRate(SPEEDS[Math.max(0, SPEEDS.indexOf(this.rate) - 1)]); break;
+      case 'Home': this.seek(this.S.t0); break;
+      case 'End': this.seek(this.S.t1); break;
+      case '[': this.jumpEvent(-1); break;
+      case ']': this.jumpEvent(1); break;
+      case 'i': case 'I': this.setIn(); break;
+      case 'o': case 'O': this.setOut(); break;
+      case 'x': case 'X': this.clearRange(); break;
+      case 'n': case 'N': this.addEventDialog('nota'); break;
+      default: {
+        const et = EVENT_TYPES.find(x => x.key === k.toLowerCase());
+        if (!et) return;
+        this.quickEvent(et.id);
+      }
+    }
+    e.preventDefault();
+  },
+  help() {
+    const rows = [['Spazio', 'Play / pausa'], ['← →', 'Indietro / avanti 1 s'], ['Maiusc + ← →', '10 s'], ['Alt + ← →  oppure  , .', 'Un fotogramma'], ['↑ ↓', 'Velocità di riproduzione'], ['[ ]', 'Evento precedente / successivo'], ['I  O  X', 'Inizio, fine, togli selezione'],
+      ...EVENT_TYPES.map(e => [e.key.toUpperCase(), `Segna: ${e.label}${e.id === 'nota' ? ' (con testo)' : ''}`]), ['⌘ Z', 'Annulla l\'ultimo evento segnato']];
+    modal({ title: 'Scorciatoie da tastiera', body: h('div', null, h('div', { class: 'help-grid' }, rows.flatMap(([a, b]) => [h('span', null, ...a.split('  ').map((x, i) => [i ? ' · ' : '', h('span', { class: 'kbd' }, x)])), h('span', null, b)])),
+      h('p', { style: { marginTop: '14px' } }, 'Sui grafici: clic per andare a quell\'ora, trascina per scorrere, rotella per allargare o stringere la finestra. Sulla mappa: clic sulla traccia per andare a quel punto. I pannelli si spostano trascinandone la barra del titolo e si ridimensionano dai bordi.')) });
+  },
+  infoBox() {
+    const m = this.S.meta;
+    const rows = [['Data', fmtDateLong(m.date)], ['Luogo', m.place], ['Barca', m.boat], ['Equipaggio', [m.helm, m.crew].filter(Boolean).join(' / ')], ['Vento', (m.windMin || m.windMax) ? `${m.windMin || '?'}–${m.windMax || '?'} kn` + (m.twd ? ` da ${m.twd}°` : '') : ''], ['Mare', m.sea], ['Obiettivi', m.goals], ['Note', m.notes],
+      ['Posizione da', this.S.pos ? this.S.pos.name : 'nessuna'], ['Velocità principale', this.S.sog ? `${this.S.sog.name} (${this.S.sog.srcName})` : 'nessuna']].filter(r => r[1]);
+    modal({ title: m.title || 'Uscita', body: h('div', { class: 'help-grid' }, rows.flatMap(([a, b]) => [h('span', { class: 'muted' }, a), h('span', { style: { whiteSpace: 'pre-wrap' } }, b)])),
+      actions: [{ label: 'Modifica in "Video e dati"', run: () => Router.go(`#/uscita/${encodeURIComponent(this.S.folder)}/dati`) }, { label: 'Chiudi', kind: 'primary' }] });
+  }
+};
+
+/* ---------- Menu a tendina ---------- */
+function menu(anchor, items) {
+  const old = $('.menu'); if (old) old.remove();
+  const m = h('div', { class: 'menu', role: 'menu' });
+  for (const it of items) {
+    if (it.sep) m.append(h('hr'));
+    else if (it.head) m.append(h('div', { class: 'mh' }, it.head));
+    else m.append(h('button', { disabled: it.disabled, style: it.disabled ? { color: 'var(--faint)' } : null, onclick: () => { m.remove(); it.run && it.run(); } }, it.label));
+  }
+  document.body.append(m);
+  const r = anchor.getBoundingClientRect();
+  m.style.top = (r.bottom + 4) + 'px';
+  m.style.left = Math.min(r.left, window.innerWidth - m.offsetWidth - 8) + 'px';
+  setTimeout(() => document.addEventListener('mousedown', function off(e) { if (!m.contains(e.target)) { m.remove(); document.removeEventListener('mousedown', off); } }), 0);
+}
+
+/* ---------- Layout predefinito, costruito sui dati disponibili ---------- */
+function defaultLayout(S) {
+  const ids = role => S.roleChannels(role).map(c => c.id);
+  const pick = (...lists) => [...new Set(lists.flat())].filter(Boolean);
+  const sog = S.sog ? [S.sog.id] : [];
+  const loads = ids('load');
+  const heel = ids('heel').slice(0, 1), pitch = ids('pitch').slice(0, 1);
+  const twa = S.ch('calc:twa') ? ['calc:twa'] : [], vmg = S.ch('calc:vmg') ? ['calc:vmg'] : [];
+  const cogId = S.cog ? [S.cog.id] : [];
+  const nums = pick(sog, vmg, cogId, twa, heel, pitch, loads).slice(0, 8);
+  const cams = S.meta.cameras;
+  const L = [];
+  L.push({ type: 'numbers', x: 0, y: 0, w: 5, h: 13, cfg: { ids: nums } });
+  if (cams.length === 0) L.push({ type: 'chart', x: 5, y: 0, w: 19, h: 13, cfg: { title: 'Velocità e carichi', ids: pick(sog, vmg, loads) } });
+  else {
+    if (cams.length === 1) L.push({ type: 'video', x: 5, y: 0, w: 11, h: 13, cfg: { cam: cams[0].id } });
+    else if (cams.length === 2) { L.push({ type: 'video', x: 5, y: 0, w: 6, h: 13, cfg: { cam: cams[0].id } }); L.push({ type: 'video', x: 11, y: 0, w: 5, h: 13, cfg: { cam: cams[1].id } }); }
+    else cams.slice(0, 4).forEach((c, i) => L.push({ type: 'video', x: 5 + (i % 2) * 6 - (i % 2 ? 1 : 0), y: Math.floor(i / 2) * 7, w: i % 2 ? 6 : 5, h: i < 2 ? 7 : 6, cfg: { cam: c.id } }));
+    L.push({ type: 'chart', x: 16, y: 0, w: 8, h: 13, cfg: { title: 'Velocità e carichi', ids: pick(sog, vmg, loads) } });
+  }
+  L.push({ type: 'events', x: 0, y: 13, w: 8, h: 11, cfg: {} });
+  L.push({ type: 'map', x: 8, y: 13, w: 8, h: 11, cfg: {} });
+  const att = pick(heel, pitch, ids('heel'), ids('pitch'), ids('other').filter(id => /:acc$/.test(id)).slice(0, 1));
+  L.push(att.length ? { type: 'chart', x: 16, y: 13, w: 8, h: 11, cfg: { title: 'Assetto', ids: att } }
+    : { type: 'stats', x: 16, y: 13, w: 8, h: 11, cfg: { ids: pick(sog, loads) } });
+  return L;
+}
+
+/* Modelli di layout validi per tutte le uscite: i canali si salvano per nome e ruolo, non per identificativo */
+function portableCfg(S, cfg) {
+  const out = JSON.parse(JSON.stringify(cfg));
+  const ref = id => { const c = S.ch(id); return c ? { name: c.name, role: c.role, srcName: c.srcName, unit: c.unit } : null; };
+  if (cfg.ids) out.ids = cfg.ids.map(ref).filter(Boolean);
+  if (cfg.colorBy) out.colorBy = ref(cfg.colorBy);
+  if (cfg.cam) out.cam = S.meta.cameras.findIndex(c => c.id === cfg.cam);
+  return out;
+}
+function resolveCfg(S, cfg, type) {
+  const out = JSON.parse(JSON.stringify(cfg || {}));
+  const used = new Set();
+  const find = r => {
+    if (!r || typeof r === 'string') return S.ch(r) ? r : null;
+    const c = S.channels.find(c => !used.has(c.id) && c.name === r.name && c.srcName === r.srcName) || S.channels.find(c => !used.has(c.id) && c.name === r.name)
+      || S.channels.find(c => !used.has(c.id) && c.role === r.role && r.role !== 'other' && c.unit === r.unit) || (r.role === 'sog' && S.sog && !used.has(S.sog.id) ? S.sog : null);
+    if (c) used.add(c.id);
+    return c ? c.id : null;
+  };
+  if (cfg && cfg.ids) out.ids = cfg.ids.map(find).filter(Boolean);
+  if (cfg && cfg.colorBy) out.colorBy = find(cfg.colorBy);
+  if (type === 'video') { const c = S.meta.cameras[Math.max(0, cfg.cam || 0)] || S.meta.cameras[0]; out.cam = c && c.id; }
+  return out;
+}

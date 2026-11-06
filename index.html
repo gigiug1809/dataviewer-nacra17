@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="it" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dataviewer Nacra 17</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233987e5'/%3E%3Cpath d='M7 23 L16 6 L16 23 Z M18 10 L25 23 L18 23 Z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="lib/uPlot.min.css">
+<link rel="stylesheet" href="lib/leaflet.css">
+<link rel="stylesheet" href="lib/gridstack.min.css">
+<link rel="stylesheet" href="css/app.css">
+<script>
+  try { const t = localStorage.getItem('n17dv.theme'); document.documentElement.dataset.theme = t ? JSON.parse(t) : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'); } catch (e) {}
+</script>
+</head>
+<body>
+<div id="view-home" class="view" hidden></div>
+<div id="view-editor" class="view" hidden></div>
+<div id="view-viewer" class="view" hidden></div>
+
+<script src="lib/uPlot.iife.min.js"></script>
+<script src="lib/leaflet.js"></script>
+<script src="lib/gridstack-all.js"></script>
+<script src="js/util.js"></script>
+<script src="js/mp4.js"></script>
+<script src="js/parse.js"></script>
+<script src="js/store.js"></script>
+<script src="js/session.js"></script>
+<script src="js/demo.js"></script>
+<script src="js/home.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/panels.js"></script>
+<script src="js/viewer.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
