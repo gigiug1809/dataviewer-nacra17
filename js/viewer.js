@@ -566,7 +566,7 @@ function defaultLayout(S) {
   L.push({ type: 'map', x: 8, y: 13, w: 8, h: 11, cfg: {} });
   const att = pick(heel, pitch, ids('heel'), ids('pitch'), ids('other').filter(id => /:acc$/.test(id)).slice(0, 1));
   L.push(att.length ? { type: 'chart', x: 16, y: 13, w: 8, h: 11, cfg: { title: 'Assetto', ids: att } }
-    : { type: 'stats', x: 16, y: 13, w: 8, h: 11, cfg: { ids: pick(sog, loads) } });
+    : { type: 'stats', x: 16, y: 13, w: 8, h: 11, cfg: { ids: pick(sog, hr, loads, ids('other').filter(id => !/:(dist|alt)$/.test(id)).slice(0, 3)) } });
   return L;
 }
 

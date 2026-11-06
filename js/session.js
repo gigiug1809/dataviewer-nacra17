@@ -76,14 +76,15 @@ class Session {
     const cachePath = this.path(`cache/${clip.file.split('/').pop()}.telemetria.json`);
     const file = await this.videoFile(clip);
     const cached = await Store.readJSON(cachePath);
-    if (cached && cached.size === file.size && cached.v === 2) return cached;
+    if (cached && cached.size === file.size && cached.v === 3) return cached;
     const r = MP4.fileReader(file);
     const info = await MP4.probe(r);
     const tel = await MP4.goproTelemetry(r, info);
     if (!tel) return null;
     const rd = (x, d) => Math.round(x * d) / d;
     const out = {
-      v: 2, size: file.size, device: tel.device, start: tel.start,
+      v: 3, size: file.size, device: tel.device, start: tel.start,
+      yaw: tel.yaw.map(a => [rd(a[0], 1000), rd(a[1], 10)]),
       att: tel.att.map(a => [rd(a[0], 1000), rd(a[1], 100), rd(a[2], 100)]),
       acc: tel.acc.map(a => [rd(a[0], 1000), rd(a[1], 100)]),
       pts: tel.pts.map(p => [rd(p.vt, 1000), rd(p.lat, 1e7), rd(p.lon, 1e7), rd(p.sog, 100)])
@@ -93,7 +94,7 @@ class Session {
   }
   async loadCamTelemetry(cam) {
     if (cam.telemetry === false) return [];
-    const att = [], acc = [], pts = [];
+    const att = [], acc = [], pts = [], yaw = [];
     for (const clip of cam.clips) {
       if (!/gopro|hero/i.test(clip.device || '') && !clip.gpmd) continue;
       let tel = null;
@@ -102,6 +103,7 @@ class Session {
       const s = this.clipStart(cam, clip);
       for (const a of tel.att) att.push([s + a[0] * 1000, a[1], a[2]]);
       for (const a of tel.acc) acc.push([s + a[0] * 1000, a[1]]);
+      for (const a of tel.yaw || []) yaw.push([s + a[0] * 1000, a[1]]);
       for (const p of tel.pts) pts.push([s + p[0] * 1000, p[1], p[2], p[3]]);
     }
     const out = [], id = cam.id, srcName = `Camera ${cam.name}`;
@@ -119,6 +121,10 @@ class Session {
     if (acc.length > 10) {
       acc.sort((a, b) => a[0] - b[0]);
       out.push(makeChannel({ id: `${id}:acc`, name: `Accelerazione picco (${cam.name})`, unit: 'g', role: 'other', src: id, srcName, t: Float64Array.from(acc, a => a[0]), v: Float64Array.from(acc, a => a[1]), dec: 2 }));
+    }
+    if (yaw.length > 10) {
+      yaw.sort((a, b) => a[0] - b[0]);
+      out.push(makeChannel({ id: `${id}:yaw`, name: `Velocità di rotazione (${cam.name})`, unit: '°/s', role: 'other', src: id, srcName, t: Float64Array.from(yaw, a => a[0]), v: Float64Array.from(yaw, a => a[1]), dec: 0 }));
     }
     if (pts.length > 10) {
       pts.sort((a, b) => a[0] - b[0]);
@@ -223,15 +229,48 @@ async function probeClip(file) {
     } catch (e) { /* nessun GPS */ }
   }
   const m = /^G([HXLP])(\d\d)(\d{4})\./i.exec(file.name);
-  let start = null, startSrc = 'mvhd';
-  if (gpsStart) { start = gpsStart; startSrc = 'gps'; }
-  else if (info.created) start = info.created;
-  else { start = file.lastModified - info.duration * 1000; startSrc = 'mtime'; }
-  return {
+  const clip = {
     file: file.name, size: file.size, duration: info.duration, w: info.width, h: info.height, fps: Math.round(info.fps * 100) / 100,
-    codec: info.codec, created: info.created, start, startSrc, device, gpmd: !!info.gpmd,
+    codec: info.codec, created: info.created, device: device || info.model || '', gpmd: !!info.gpmd, samsung: !!info.samsung,
+    appleStart: info.appleStart || null, gpsStart, mtime: file.lastModified,
     gopro: m ? { chapter: +m[2], number: m[3] } : null
   };
+  Object.assign(clip, clipStartFromMeta(clip));
+  return clip;
+}
+
+/* Ora d'inizio di un video dai suoi metadati.
+   - GoPro con GPS: ora del satellite (esatta)
+   - iPhone: com.apple.quicktime.creationdate (inizio, con fuso orario)
+   - telefoni Android (Samsung, Xiaomi…): nel file c'è l'ora della FINE; il nome del file dice l'ora d'inizio
+   - GoPro senza GPS e altre camere: ora registrata nel file (inizio) */
+function nameTime(name) {
+  const m = /(?:^|[^\d])(20\d\d)(\d\d)(\d\d)[_\-T ]?(\d\d)(\d\d)(\d\d)(\d{0,3})/.exec(name);
+  if (!m) return null;
+  const [y, mo, d, hh, mi, ss] = m.slice(1, 7).map(Number);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || hh > 23 || mi > 59 || ss > 59) return null;
+  const ms = m[7] ? Number(m[7].padEnd(3, '0')) : 0;
+  // i telefoni Pixel scrivono il nome in UTC, tutti gli altri in ora locale
+  return /^PXL_/i.test(name) ? Date.UTC(y, mo - 1, d, hh, mi, ss, ms) : new Date(y, mo - 1, d, hh, mi, ss, ms).getTime();
+}
+function clipStartFromMeta(c) {
+  const dur = (c.duration || 0) * 1000, nt = c.gopro ? null : nameTime(c.file.split('/').pop());
+  if (c.gpsStart) return { start: c.gpsStart, startSrc: 'gps' };
+  if (c.appleStart) return { start: c.appleStart, startSrc: 'apple' };
+  if (c.created) {
+    const end = c.created - dur;
+    if (nt != null) {
+      // il nome dice il secondo in cui è partita la registrazione (troncato: aggiungo mezzo secondo);
+      // l'ora di fine scritta nel file arriva 1-3 s dopo lo stop, quindi il nome è più preciso
+      if (Math.abs(end - nt) <= 4000) return { start: nt + 500, startSrc: 'filename' };
+      if (Math.abs(c.created - nt) <= 3000) return { start: c.created, startSrc: 'mvhd' };
+      return { start: nt, startSrc: 'filename' };
+    }
+    if (c.samsung) return { start: end, startSrc: 'mvhd-end' };
+    return { start: c.created, startSrc: 'mvhd' };
+  }
+  if (nt != null) return { start: nt, startSrc: 'filename' };
+  return { start: (c.mtime || Date.now()) - dur, startSrc: 'mtime' };
 }
 /* I capitoli GoPro (GX02…, GX03…) riportano l'ora del primo: li metto in fila */
 function chainChapters(clips) {
@@ -247,7 +286,7 @@ function chainChapters(clips) {
   }
   clips.sort((a, b) => a.start - b.start);
 }
-const START_SRC_LABEL = { gps: 'GPS della GoPro', mvhd: 'ora registrata nel file', mtime: 'data di modifica del file', chain: 'segue il capitolo precedente', manual: 'impostata a mano' };
+const START_SRC_LABEL = { gps: 'GPS della GoPro (esatta)', apple: 'metadati iPhone', 'mvhd-end': 'fine registrazione meno la durata', filename: 'nome del file', mvhd: 'ora registrata nel file', mtime: 'data di modifica del file', chain: 'segue il capitolo precedente', manual: 'impostata a mano' };
 
 /* ---------- Copertura: dove ci sono video, dove ci sono dati, dove ci sono entrambi ---------- */
 function mergeSpans(list, gap = 0) {

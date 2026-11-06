@@ -105,6 +105,29 @@
       created: mv.created > MAC_EPOCH ? (mv.created - MAC_EPOCH) * 1000 : null, // come scritto nel file (UTC nominale)
       width: 0, height: 0, codec: '', fps: 0, gpmd: null
     };
+    // metadati del produttore
+    const udta = path(u8, root, 'udta');
+    if (udta) for (const b of kids(u8, udta)) {
+      if (b.type === 'smta' || b.type === 'SDLN') info.samsung = true;
+      if (b.type === 'auth') info.model = new TextDecoder().decode(u8.subarray(b.data + 6, b.end)).replace(/\0+/g, '').trim();
+    }
+    const meta = path(u8, root, 'meta');
+    if (meta) {
+      let mk = children(u8, meta.data, meta.end);
+      if (!find(mk, 'keys')) mk = children(u8, meta.data + 4, meta.end); // variante ISO con versione
+      const keys = find(mk, 'keys'), ilst = find(mk, 'ilst');
+      if (keys && ilst) {
+        const names = []; let q = keys.data + 8;
+        while (q + 8 <= keys.end) { const sz = u32(u8, q); names.push(new TextDecoder().decode(u8.subarray(q + 8, q + sz))); q += sz; }
+        for (const it of kids(u8, ilst)) {
+          const idx = u32(u8, it.start + 4) - 1, d = find(kids(u8, it), 'data');
+          if (!d || !names[idx]) continue;
+          const v = new TextDecoder().decode(u8.subarray(d.data + 8, d.end));
+          if (names[idx] === 'com.apple.quicktime.creationdate') { const t = Date.parse(v.replace(/([+-]\d\d)(\d\d)$/, '$1:$2')); if (isFinite(t)) info.appleStart = t; }
+          if (names[idx] === 'com.apple.quicktime.model') info.model = v;
+        }
+      }
+    }
     for (const trak of kids(u8, root).filter(b => b.type === 'trak')) {
       const mdia = path(u8, trak, 'mdia');
       if (!mdia) continue;
@@ -159,7 +182,7 @@
   }
   function parsePayload(buf) {
     const u8 = buf, dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    const res = { gpsu: null, fix: null, dop: null, pts: [], fmt: null, device: '', grav: [], accl: [] };
+    const res = { gpsu: null, fix: null, dop: null, pts: [], fmt: null, device: '', grav: [], accl: [], gyro: [] };
     const walk = (s, e, ctx) => klv(u8, dv, s, e, (key, type, ss, rep, d, len) => {
       if (type === '\0') {
         if (key === 'DEVC' || key === 'STRM') walk(d, d + len, key === 'STRM' ? {} : ctx);
@@ -171,8 +194,8 @@
       if (key === 'GPSU') { res.gpsu = gpsuToMs(new TextDecoder().decode(u8.subarray(d, d + len))); return; }
       if (key === 'GPSF') { res.fix = readNum(dv, d, type); return; }
       if (key === 'GPSP') { res.dop = readNum(dv, d, type) / 100; return; }
-      if ((key === 'GRAV' || key === 'ACCL') && (type === 's' || type === 'S')) {
-        const sc = (ctx.scal && ctx.scal[0]) || 1, arr = key === 'GRAV' ? res.grav : res.accl;
+      if ((key === 'GRAV' || key === 'ACCL' || key === 'GYRO') && (type === 's' || type === 'S')) {
+        const sc = (ctx.scal && ctx.scal[0]) || 1, arr = key === 'GRAV' ? res.grav : key === 'GYRO' ? res.gyro : res.accl;
         for (let r = 0; r < rep; r++) { const q = d + r * ss; arr.push([dv.getInt16(q) / sc, dv.getInt16(q + 2) / sc, dv.getInt16(q + 4) / sc]); }
         return;
       }
@@ -207,7 +230,7 @@
   async function goproTelemetry(reader, info, onProgress) {
     const g = info.gpmd;
     if (!g || !g.n) return null;
-    const pts = [], deltas = [], att = [], acc = [];
+    const pts = [], deltas = [], att = [], acc = [], yaw = [];
     let vt = 0, device = '';
     const RAD = 180 / Math.PI;
     for (let i = 0; i < g.n; i++) {
@@ -233,6 +256,18 @@
         for (let q = k; q < k + per; q++) { x += G[q][0]; y += G[q][1]; z += G[q][2]; }
         att.push([vt + (k + per / 2) / ng * dur, Math.atan2(x, y) * RAD, Math.atan2(z, y) * RAD]);
       }
+      // rotazione attorno alla verticale: giroscopio proiettato sulla direzione della gravità
+      // (presa dall'accelerometro, che usa gli stessi assi del giroscopio)
+      const Gy = pl.gyro, ny = Gy.length;
+      if (ny && pl.accl.length) {
+        let ax = 0, ay = 0, az = 0; for (const a of pl.accl) { ax += a[0]; ay += a[1]; az += a[2]; }
+        const an = Math.hypot(ax, ay, az) || 1; ax /= an; ay /= an; az /= an;
+        const py = Math.max(1, Math.round(ny / (dur * 10)));
+        for (let k = 0; k + py <= ny; k += py) {
+          let r = 0; for (let q = k; q < k + py; q++) r += Gy[q][0] * ax + Gy[q][1] * ay + Gy[q][2] * az;
+          yaw.push([vt + (k + py / 2) / ny * dur, r / py * RAD]);
+        }
+      }
       const A = pl.accl, na = A.length, pa = Math.max(1, Math.round(na / (dur * 10)));
       for (let k = 0; k + pa <= na; k += pa) {
         let m = 0;
@@ -243,7 +278,7 @@
       if (onProgress && i % 50 === 0) onProgress(i / g.n);
     }
     deltas.sort((a, b) => a - b);
-    return { device, pts, att, acc, start: deltas.length ? deltas[deltas.length >> 1] : null };
+    return { device, pts, att, acc, yaw, start: deltas.length ? deltas[deltas.length >> 1] : null };
   }
 
   const MP4 = { fileReader, probe, goproTelemetry, parsePayload };

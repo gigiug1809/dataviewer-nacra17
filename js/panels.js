@@ -155,6 +155,7 @@ class VideoPanel {
   nudge(ms) {
     const cam = this.cam();
     cam.offset = Math.round((Number(cam.offset) || 0) + ms);
+    cam.sync = { method: 'manual', at: Date.now() };
     this.afterOffset();
   }
   afterOffset() {
@@ -202,6 +203,7 @@ class VideoPanel {
     if (!this.clip) { toast('Nessun video caricato.'); return; }
     const vt = this.S.clipStart(cam, this.clip) + this.video.currentTime * 1000;
     cam.offset = Math.round((Number(cam.offset) || 0) + (this.V.t - vt));
+    cam.sync = { method: 'manual', at: Date.now() };
     this.unlocked = false; this.video.controls = false;
     this.afterOffset();
     toast(`Sincronizzato: orologio di ${cam.name} corretto di ${fmtOffset(cam.offset)}.`);

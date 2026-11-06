@@ -11,8 +11,32 @@ const Editor = {
       this.meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
       if (!this.meta) { toast('Uscita non trovata.'); Router.go('#/'); return; }
     } else this.meta = newSessionMeta();
+    if (folder) this.migrateClips();
     this.render();
-    if (folder) this.parseAll();
+    if (folder) this.parseAll().then(() => this.runAutoSync());
+  },
+  // video caricati con la versione precedente: ricalcolo l'ora d'inizio (telefoni Samsung, iPhone, nome del file)
+  migrateClips() {
+    let n = 0;
+    for (const cam of this.meta.cameras) for (const cl of cam.clips) {
+      if (!['mvhd', 'mtime', 'mvhd-end'].includes(cl.startSrc) || cl.gopro) continue;
+      const r = clipStartFromMeta(cl);
+      if (Math.abs(r.start - cl.start) > 500) { Object.assign(cl, r); n++; }
+    }
+    if (n) { this.save(); toast(`Corretta l'ora d'inizio di ${n} video (il telefono scrive nel file l'ora della fine).`, 7000); }
+  },
+  /* Sincronizzazione automatica: parte da sola dopo ogni caricamento */
+  async runAutoSync(force = false) {
+    if (!this.folder) return;
+    if (this.syncing) { this.syncAgain = true; return; }
+    this.syncing = true; this.syncMsg = 'Sincronizzo video e dati…'; this.renderCheck();
+    try {
+      const r = await autoSync(this.folder, this.meta, { force, onStep: m => { this.syncMsg = m; this.renderCheck(); } });
+      this.syncReport = r.report;
+      if (r.changed) { this.save(); for (const src of this.meta.sources) this.rebuild(src, false); this.renderVideo(); this.renderData(); }
+    } catch (e) { this.syncReport = [{ what: 'Sincronizzazione', ok: false, text: errMsg(e) }]; }
+    this.syncing = false; this.syncMsg = ''; this.renderCheck();
+    if (this.syncAgain) { this.syncAgain = false; this.runAutoSync(); }
   },
   save: debounce(function () { if (Editor.folder) Store.saveSession(Editor.folder, Editor.meta).catch(e => toast('Salvataggio non riuscito: ' + errMsg(e), 8000, 'bad')); }, 500),
 
@@ -226,6 +250,8 @@ const Editor = {
       this.renderVideo(); this.renderCheck();
     }
     if (!cam.clips.length) { this.meta.cameras = this.meta.cameras.filter(c => c !== cam); this.renderVideo(); }
+    delete cam.sync;
+    this.runAutoSync();
   },
   async scanFolder() {
     let entries = [];
@@ -245,6 +271,8 @@ const Editor = {
     if (!cam.clips.length) this.meta.cameras = this.meta.cameras.filter(c => c !== cam);
     this.save(); this.renderVideo(); this.renderCheck();
     toast(`Aggiunti ${n} video a "${cam.name}".`);
+    delete cam.sync;
+    this.runAutoSync();
   },
 
   /* ---------- 3. Dati ---------- */
@@ -312,6 +340,8 @@ const Editor = {
       } catch (e) { toast(`${file.name}: ${errMsg(e)}`, 8000, 'bad'); }
     }
     this.renderData(); this.renderCheck();
+    for (const cam of this.meta.cameras) if (cam.sync && cam.sync.method === 'gyro') delete cam.sync;
+    this.runAutoSync();
   },
   async parseAll() {
     for (const src of this.meta.sources) {
@@ -494,6 +524,13 @@ const Editor = {
     for (const n of notes) sec.append(h('p', { class: 'stat warn' }, n));
     if (both.length) sec.append(h('p', { class: 'stat good' }, `✓ Video e dati insieme per ${fmtDur(both.reduce((a, x) => a + x[1] - x[0], 0))} (riga verde): lì puoi analizzare le manovre con le immagini.`));
     else if (!notes.length) sec.append(h('p', { class: 'stat good' }, 'Tutto in ordine.'));
+    const box = h('div', { class: 'src-card', style: { marginTop: '6px' } },
+      h('div', { class: 'src-head' }, h('b', null, 'Sincronizzazione automatica'), h('div', { class: 'sp' }),
+        h('button', { class: 'btn sm', disabled: !!this.syncing, onclick: () => this.runAutoSync(true) }, this.syncing ? 'Sto sincronizzando…' : 'Rifai da capo')));
+    if (this.syncMsg) box.append(h('div', { class: 'stat' }, this.syncMsg));
+    for (const r of this.syncReport || []) box.append(h('div', { class: 'stat ' + (r.ok ? 'good' : 'warn') }, `${r.ok ? '✓' : '!'} ${r.what}: ${r.text}`));
+    box.append(h('p', { class: 'faint small', style: { margin: 0 } }, 'Parte da sola ogni volta che carichi video o dati. GoPro: confronta il giroscopio della camera con le virate viste dal GPS (precisione di un decimo di secondo; la camera deve essere fissata alla barca). Telefono: usa nome del file e metadati. Strumenti con l\'orologio del telefono (Cyclops): sovrappone le tracce GPS. Quello che sistemi a mano con ⏱ nel viewer non viene toccato, a meno che premi "Rifai da capo".'));
+    sec.append(box);
   },
 
   dropZone(el, onFiles) {
