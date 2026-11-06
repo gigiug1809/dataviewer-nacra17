@@ -432,8 +432,8 @@ class MapPanel {
     this.pts = pts;
     this.map = L.map(this.el, { zoomControl: true, attributionControl: true, preferCanvas: true, zoomSnap: 0.25 });
     const dark = theme() === 'dark';
-    if (pts.length) this.map.fitBounds(L.latLngBounds(pts.map(p => [p[1], p[2]])), { padding: [16, 16] });
-    else this.map.setView([39.2, 9.1], 12);
+    this.bounds = pts.length ? L.latLngBounds(pts.map(p => [p[1], p[2]])) : null;
+    this.fit();
     const carto = L.tileLayer(`https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/${dark ? 'World_Dark_Gray_Base' : 'World_Light_Gray_Base'}/MapServer/tile/{z}/{y}/{x}`, { maxZoom: 20, maxNativeZoom: 16, attribution: 'Mappa © Esri' });
     const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, maxNativeZoom: 19, attribution: '© OpenStreetMap' });
     const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Immagini © Esri' });
@@ -512,7 +512,13 @@ class MapPanel {
     this.trail.setLatLngs(tr);
     if (this.cfg.follow) this.map.panTo([a, b], { animate: false });
   }
-  resize() { if (this.map) this.map.invalidateSize(); }
+  // inquadra la traccia; se il pannello non ha ancora dimensioni, riprova al primo ridimensionamento
+  fit() {
+    const sz = this.map.getSize();
+    if (this.bounds) this.map.fitBounds(this.bounds, { padding: [16, 16] }); else this.map.setView([39.2, 9.1], 12);
+    this.fitted = sz.x > 60 && sz.y > 60;
+  }
+  resize() { if (!this.map) return; this.map.invalidateSize(); if (!this.fitted) this.fit(); }
   settings() {
     const sel = h('select', { class: 'full' }, h('option', { value: '' }, 'Velocità principale'), this.S.channels.filter(c => c.role !== 'lat' && c.role !== 'lon' && !c.circular).map(c => h('option', { value: c.id }, `${c.name} (${c.srcName})`)));
     sel.value = this.cfg.colorBy || '';
