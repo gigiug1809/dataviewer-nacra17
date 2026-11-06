@@ -29,6 +29,12 @@ const Viewer = {
     await S.load((msg, p) => { load.querySelector('span').textContent = msg; load.querySelector('.progress i').style.width = (p * 100) + '%'; });
     if (!this.open_ || this.S !== S) return;
     load.remove();
+    this.start(S, root);
+  },
+  /* avvio comune: uscita da file oppure sessione live */
+  start(S, root) {
+    const meta = S.meta;
+    this.S = S;
     S.onSave = st => { const d = $('#saveDot'); if (d) { d.className = 'save-dot ' + st; d.textContent = st === 'saved' ? 'Salvato' : st === 'error' ? 'Errore' : 'Salvo…'; } };
     this.playing = false; this.rate = 1; this.scrubbing = false; this.master = null; this.drawSeq = 0;
     this.win = meta.view.win ?? 60000;
@@ -37,6 +43,7 @@ const Viewer = {
     this.locked = !!meta.view.locked;
     this.undo = [];
     const firstVid = meta.cameras.flatMap(c => c.clips.map(cl => S.clipStart(c, cl))).sort((a, b) => a - b)[0];
+    if (S.live) meta.view.t = S.t1;
     this.t = clamp(meta.view.t ?? firstVid ?? S.t0, S.t0, S.t1);
     this.buildUI(root);
     if (S.loadErrors.length) toast('Alcuni file non sono stati letti: ' + S.loadErrors.join(' · '), 10000, 'bad');
@@ -87,7 +94,7 @@ const Viewer = {
       h('button', { class: 'btn sm', onclick: e => this.layoutMenu(e.currentTarget) }, 'Layout'),
       lockBtn,
       h('div', { class: 'sep' }),
-      h('button', { class: 'btn sm', onclick: () => Router.go(`#/uscita/${encodeURIComponent(S.folder)}/dati`) }, 'Video e dati'),
+      S.live ? h('span', { id: 'liveBar', class: 'row', style: { gap: '6px' } }) : h('button', { class: 'btn sm', onclick: () => Router.go(`#/uscita/${encodeURIComponent(S.folder)}/dati`) }, 'Video e dati'),
       h('button', { class: 'icon-btn', title: 'Scheda dell\'uscita', 'aria-label': 'Scheda dell\'uscita', onclick: () => this.infoBox() }, 'ⓘ'),
       h('button', { class: 'icon-btn', title: 'Tema chiaro / scuro', 'aria-label': 'Tema', onclick: toggleTheme }, '◐'),
       h('button', { class: 'icon-btn', title: 'Scorciatoie da tastiera', 'aria-label': 'Scorciatoie', onclick: () => this.help() }, '?'));
@@ -102,7 +109,7 @@ const Viewer = {
     this.grid.on('change', () => this.layoutChanged());
     const firstOpen = !m.layout;
     if (firstOpen) { m.layout = this.layoutData(); S.save(); }
-    this.checkNewData(firstOpen);
+    if (!S.live) this.checkNewData(firstOpen);
     this.requestDraw();
   },
   /* Dati arrivati dopo che il layout è stato fatto: li propongo per la dashboard */
@@ -252,6 +259,8 @@ const Viewer = {
   requestDraw() { this.dirty = true; this.drawSeq++; },
   seek(t) {
     if (!this.S) return;
+    // nel live: tornare indietro sospende il "segui il live"
+    if (this.S.live && t < this.S.t1 - 3000 && this.S.follow) { this.S.follow = false; this.S.onFollow && this.S.onFollow(); }
     this.t = clamp(t, this.S.t0, this.S.t1);
     this.anchor = { t: this.t, now: performance.now() };
     this.dirty = true;
@@ -275,6 +284,7 @@ const Viewer = {
       if (!this.master) { if (!this.anchor || now - this.anchor.now > 2000) this.anchor = { t: this.t, now: now - 16 }; this.t = this.anchor.t + (now - this.anchor.now) * this.rate; this.anchor = { t: this.t, now }; }
       if (this.t >= this.S.t1) { this.t = this.S.t1; this.pause(); }
     }
+    if (this.S.live && this.S.follow && !this.scrubbing && this.S.t1 !== this.t) { this.t = this.S.t1; this.dirty = true; }
     if (this.playing || this.dirty) {
       this.dirty = false;
       for (const r of this.panels.values()) { try { r.inst.update(this.t, this.playing); } catch (e) { console.error(e); } }

@@ -372,10 +372,9 @@ function deriveFromTrack(lat, lon, srcId, srcName) {
   // rotta: dove la barca è quasi ferma la direzione è solo rumore
   const Cm = Float64Array.from(C.map((c, i) => S[i] < 1.2 ? NaN : c));
   const keep = [...Cm.keys()].filter(i => isFinite(Cm[i]));
-  return [
-    makeChannel({ id: `${srcId}:sogcalc`, name: 'Velocità GPS', unit: 'kn', role: 'sog', src: srcId, srcName, t, v: Float64Array.from(S), dec: 1, derived: true }),
-    makeChannel({ id: `${srcId}:cogcalc`, name: 'Rotta GPS', unit: '°', role: 'cog', src: srcId, srcName, t: Float64Array.from(keep, i => t[i]), v: Float64Array.from(keep, i => Cm[i]), derived: true })
-  ];
+  const out = [makeChannel({ id: `${srcId}:sogcalc`, name: 'Velocità GPS', unit: 'kn', role: 'sog', src: srcId, srcName, t, v: Float64Array.from(S), dec: 1, derived: true })];
+  if (keep.length >= 2) out.push(makeChannel({ id: `${srcId}:cogcalc`, name: 'Rotta GPS', unit: '°', role: 'cog', src: srcId, srcName, t: Float64Array.from(keep, i => t[i]), v: Float64Array.from(keep, i => Cm[i]), derived: true }));
+  return out;
 }
 
 /* Angolo al vento e VMG quando è nota la direzione del vento */

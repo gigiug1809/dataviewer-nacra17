@@ -222,7 +222,7 @@ function fmtOffsetShort(sec) { const m = Math.floor(sec / 60), s = sec - m * 60;
 class ChartPanel {
   constructor(V, cfg) {
     this.V = V; this.cfg = cfg; this.S = V.S;
-    cfg.ids = (cfg.ids || []).filter(id => this.S.byId.has(id));
+    cfg.ids = (cfg.ids || []).filter(id => this.S.live || this.S.byId.has(id));
     this.el = h('div', { class: 'chart-body', style: { position: 'absolute', inset: 0 } });
     this.lanes = [];
     this.build();
@@ -243,6 +243,7 @@ class ChartPanel {
     this.lanes = []; this.el.textContent = '';
     const chans = this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean);
     if (!chans.length) {
+      if (this.S.live && this.cfg.ids.length) { this.el.append(h('div', { class: 'pnl-empty' }, 'In attesa di questi dati dal telefono…')); return; }
       this.el.append(h('div', { class: 'pnl-empty' }, h('div', null, 'Scegli cosa mostrare in questo grafico.', h('button', { class: 'btn sm', onclick: () => this.V.panelSettings(this) }, 'Scegli i canali'))));
       return;
     }
@@ -267,20 +268,34 @@ class ChartPanel {
     }
     requestAnimationFrame(() => this.makePlots());
   }
+  laneData(lane) {
+    const S = this.S, span = Math.max(1000, S.t1 - S.t0);
+    const minStep = Math.min(...lane.list.map(c => c.step));
+    const step = Math.max(minStep, span / 150000, 20);
+    const n = Math.max(2, Math.floor(span / step) + 1);
+    const xs = new Float64Array(n);
+    for (let k = 0; k < n; k++) xs[k] = (S.t0 + k * step) / 1000;
+    const ys = lane.list.map(c => { const r = resample(c, S.t0, step, n); const a = new Array(n); for (let k = 0; k < n; k++) a[k] = isFinite(r[k]) ? r[k] : null; return a; });
+    let mn = Infinity, mx = -Infinity;
+    for (const c of lane.list) { mn = Math.min(mn, c.min); mx = Math.max(mx, c.max); }
+    if (lane.unit === '°dir') { mn = 0; mx = 360; }
+    else { const pad = (mx - mn) * 0.06 || 1; mn -= pad; mx += pad; if (lane.list.every(c => c.min >= 0) && mn < 0) mn = 0; }
+    return { data: [xs, ...ys], fixed: [mn, mx] };
+  }
+  /* live: i dati sono cresciuti, aggiorno i grafici senza ricostruirli */
+  refreshData() {
+    const want = this.cfg.ids.filter(id => this.S.byId.has(id));
+    const have = this.lanes.flatMap(l => l.list.map(c => c.id));
+    if (want.join() !== have.join()) { this.build(); return; }
+    for (const lane of this.lanes) { if (!lane.u) continue; const d = this.laneData(lane); lane.fixed = d.fixed; lane.u.setData(d.data, false); }
+    this.lastKey = '';
+  }
   makePlots() {
-    const S = this.S, span = S.t1 - S.t0;
+    const S = this.S;
     for (const lane of this.lanes) {
-      const minStep = Math.min(...lane.list.map(c => c.step));
-      const step = Math.max(minStep, span / 150000, 20);
-      const n = Math.max(2, Math.floor(span / step) + 1);
-      const xs = new Float64Array(n);
-      for (let k = 0; k < n; k++) xs[k] = (S.t0 + k * step) / 1000;
-      const ys = lane.list.map(c => { const r = resample(c, S.t0, step, n); const a = new Array(n); for (let k = 0; k < n; k++) a[k] = isFinite(r[k]) ? r[k] : null; return a; });
-      let mn = Infinity, mx = -Infinity;
-      for (const c of lane.list) { mn = Math.min(mn, c.min); mx = Math.max(mx, c.max); }
-      if (lane.unit === '°dir') { mn = 0; mx = 360; }
-      else { const pad = (mx - mn) * 0.06 || 1; mn -= pad; mx += pad; if (lane.list.every(c => c.min >= 0) && mn < 0) mn = 0; }
-      lane.fixed = [mn, mx];
+      const { data, fixed } = this.laneData(lane);
+      const xs = data[0], ys = data.slice(1);
+      lane.fixed = fixed;
       const cs = getComputedStyle(document.documentElement);
       const axisC = cs.getPropertyValue('--axis').trim(), gridC = cs.getPropertyValue('--grid').trim();
       const self = this;
@@ -415,7 +430,7 @@ class MapPanel {
     if (cfg.trail == null) cfg.trail = 60;
     this.el = h('div', { class: 'map-box' });
     const pos = this.S.pos;
-    if (!pos) { this.el.append(h('div', { class: 'pnl-empty' }, 'Nessuna posizione GPS: carica un file con latitudine e longitudine (Vakaros, GPX, Cyclops) o accendi il GPS della GoPro.')); return; }
+    if (!pos) { this.el.append(h('div', { class: 'pnl-empty' }, this.S.live ? 'In attesa della posizione GPS dal telefono…' : 'Nessuna posizione GPS: carica un file con latitudine e longitudine (Vakaros, GPX, Cyclops) o accendi il GPS della GoPro.')); return; }
     requestAnimationFrame(() => this.init());
   }
   title() { return 'Mappa'; }
@@ -463,6 +478,21 @@ class MapPanel {
     this.V.requestDraw();
   }
   colorCh() { return this.S.ch(this.cfg.colorBy) || this.S.sog; }
+  /* live: la traccia cresce */
+  refreshData() {
+    const S = this.S, pos = S.pos;
+    if (!pos) return;
+    if (!this.map) { this.el.textContent = ''; this.init(); return; }
+    const now = performance.now();
+    if (this._lastTrack && now - this._lastTrack < 4000) return;
+    this._lastTrack = now;
+    const t0 = Math.max(pos.lat.t[0], pos.lon.t[0]), t1 = Math.min(pos.lat.t[pos.lat.t.length - 1], pos.lon.t[pos.lon.t.length - 1]);
+    const step = clamp((t1 - t0) / 20000, 1000, 5000), pts = [];
+    for (let t = t0; t <= t1; t += step) { const a = interp(pos.lat, t), b = interp(pos.lon, t); if (isFinite(a) && isFinite(b)) pts.push([t, a, b]); }
+    this.pts = pts;
+    if (!this.fitted && pts.length > 1) { this.bounds = L.latLngBounds(pts.map(p => [p[1], p[2]])); this.fit(); }
+    this.drawTrack();
+  }
   drawTrack() {
     this.trackLayer.clearLayers();
     const c = this.colorCh(), pts = this.pts;
@@ -517,7 +547,7 @@ class MapPanel {
   // inquadra la traccia; se il pannello non ha ancora dimensioni, riprova al primo ridimensionamento
   fit() {
     const sz = this.map.getSize();
-    if (this.bounds) this.map.fitBounds(this.bounds, { padding: [16, 16] }); else this.map.setView([39.2, 9.1], 12);
+    if (this.bounds) this.map.fitBounds(this.bounds, { padding: [16, 16], maxZoom: 15 }); else this.map.setView([39.2, 9.1], 12);
     this.fitted = sz.x > 60 && sz.y > 60;
   }
   resize() { if (!this.map) return; this.map.invalidateSize(); if (!this.fitted) this.fit(); }
@@ -535,7 +565,7 @@ class MapPanel {
 class NumbersPanel {
   constructor(V, cfg) {
     this.V = V; this.cfg = cfg; this.S = V.S;
-    cfg.ids = (cfg.ids || []).filter(id => this.S.byId.has(id));
+    cfg.ids = (cfg.ids || []).filter(id => this.S.live || this.S.byId.has(id));
     if (cfg.avg == null) cfg.avg = 10;
     this.el = h('div', { class: 'num-grid' });
     this.build();
@@ -553,6 +583,10 @@ class NumbersPanel {
       this.tiles.push({ c, val, avg, rng, bar, last: '' });
     }
     this.resize();
+  }
+  refreshData() {
+    const have = (this.tiles || []).map(t => t.c.id).join(), want = this.cfg.ids.filter(id => this.S.byId.has(id)).join();
+    if (have !== want) this.build();
   }
   resize() {
     const n = this.tiles ? this.tiles.length : 0;

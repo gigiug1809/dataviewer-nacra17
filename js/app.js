@@ -6,6 +6,10 @@ const Router = {
   resume() { this.route(); },
   async route() {
     const hs = location.hash || '#/';
+    // il live non ha bisogno della cartella della libreria (funziona anche su iPad)
+    let lm;
+    if (hs === '#/live') { Viewer.close(); this.show('home'); Live.page(); return; }
+    if ((lm = /^#\/live\/([^/]+)$/.exec(hs))) { this.show('viewer'); Live.open(decodeURIComponent(lm[1]).toUpperCase()); return; }
     if (!Store.root) {
       // la libreria va riaperta con un clic (permesso di Chrome): poi si torna qui
       const rec = await Store.remembered();

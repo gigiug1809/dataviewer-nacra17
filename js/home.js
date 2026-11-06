@@ -12,6 +12,7 @@ const Home = {
     page.append(h('div', { class: 'topbar' },
       h('div', { class: 'brand' }, h('div', { class: 'brand-mark', html: ICON_BOAT }), h('div', null, h('h1', null, 'Dataviewer Nacra 17'), h('div', { class: 'lib-path' }, Store.root ? ['Libreria: ', h('b', null, Store.name)] : 'Analisi delle uscite: video, dati e eventi'))),
       h('div', { class: 'sp' }),
+      h('button', { class: 'btn', title: 'Dati della barca in tempo reale dal telefono', onclick: () => Router.go('#/live') }, '📡 Live'),
       installButton(),
       Store.root ? h('button', { class: 'btn ghost', onclick: () => this.changeLib() }, 'Cambia cartella') : null,
       h('button', { class: 'icon-btn', title: 'Tema chiaro / scuro', 'aria-label': 'Tema chiaro o scuro', onclick: toggleTheme }, '◐')));
@@ -104,7 +105,8 @@ const Home = {
           h('li', null, 'Premi "Copia il link".'),
           h('li', null, 'Apri Google Chrome, incolla il link nella barra dell\'indirizzo e premi Invio.'),
           h('li', null, 'Per averlo nel Dock come app: in Chrome premi l\'icona "Installa" in fondo alla barra dell\'indirizzo (uno schermo con una freccia), oppure il pulsante "Installa come app" in alto nella libreria. Da lì in poi si apre sempre in Chrome.')),
-        h('div', { class: 'row' }, mobile ? null : copy, h('button', { class: 'btn ghost', onclick: () => this.tryOPFS() }, 'Prova qui con la memoria del browser'))));
+        h('div', { class: 'row' }, mobile ? null : copy, h('button', { class: 'btn ghost', onclick: () => this.tryOPFS() }, 'Prova qui con la memoria del browser'))),
+        h('div', { class: 'card', style: { display: 'grid', gap: '10px' } }, h('h2', null, '📡 Dati live dalla barca'), h('p', { class: 'muted' }, 'Per guardare in tempo reale i dati del Registratore N17 non serve Chrome: funziona anche qui.'), h('div', null, h('button', { class: 'btn primary', onclick: () => Router.go('#/live') }, 'Apri il live'))));
       return;
     }
     if (rec && rec.kind === 'fs') {
