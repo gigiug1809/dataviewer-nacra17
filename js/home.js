@@ -21,22 +21,66 @@ const Home = {
 
     try { this.sessions = await Store.listSessions(); }
     catch (e) { page.append(h('div', { class: 'card' }, h('p', null, 'Non riesco a leggere la cartella: ' + errMsg(e) + '. Se è su un disco esterno, controlla che sia collegato.'), h('button', { class: 'btn', onclick: () => this.changeLib() }, 'Scegli la cartella'))); return; }
-
-    const search = h('input', { type: 'search', placeholder: 'Cerca per titolo, luogo, equipaggio, note…', value: this.q, style: { flex: 1, minWidth: '200px' } });
-    const list = h('div', { class: 'sess-list' });
-    search.addEventListener('input', () => { this.q = search.value; this.fill(list); });
-    page.append(h('div', { class: 'row', style: { marginBottom: '6px' } },
-      search,
-      h('button', { class: 'btn', onclick: async () => { const f = await createDemoSession(); toast('Creata l\'uscita di esempio.'); Router.go(`#/uscita/${encodeURIComponent(f)}/viewer`); } }, 'Crea uscita di esempio'),
-      h('button', { class: 'btn primary', onclick: () => Router.go('#/nuova') }, '+ Nuova uscita')));
     if (Store.kind === 'opfs') page.append(h('p', { class: 'stat warn' }, 'Stai usando la memoria interna del browser, adatta solo a provare l\'app: per i video veri scegli una cartella sul disco esterno con "Cambia cartella".'));
-    page.append(list);
-    this.fill(list);
+    if (!this.month) { const d = new Date(); this.month = [d.getFullYear(), d.getMonth()]; }
+    this.cal = h('div', { class: 'card cal' });
+    this.dayList = h('div', { class: 'sess-list' });
+    page.append(this.cal, this.dayList);
+    this.drawCalendar();
+    page.append(h('div', { class: 'row', style: { marginTop: '18px', justifyContent: 'center' } },
+      h('button', { class: 'btn ghost sm', onclick: async () => { const f = await createDemoSession(); toast('Creata l\'uscita di esempio (1 novembre 2026).'); Router.go(`#/uscita/${encodeURIComponent(f)}/viewer`); } }, 'Crea l\'uscita di esempio')));
   },
-  fill(list) {
+  /* Calendario: i giorni con dati sono illuminati, oggi ha il bordo */
+  drawCalendar() {
+    const [y, m] = this.month, cal = this.cal;
+    cal.textContent = '';
+    const byDay = new Map();
+    for (const s of this.sessions) { const d = s.meta.date; if (!byDay.has(d)) byDay.set(d, []); byDay.get(d).push(s); }
+    const MF = new Intl.DateTimeFormat('it-IT', { month: 'long', year: 'numeric' });
+    const move = k => { const d = new Date(y, m + k, 1); this.month = [d.getFullYear(), d.getMonth()]; this.drawCalendar(); };
+    const today = ymdOf(Date.now());
+    const monthCount = this.sessions.filter(s => (s.meta.date || '').startsWith(`${y}-${p2(m + 1)}`) && (s.meta.sources.length || s.meta.cameras.length)).length;
+    cal.append(h('div', { class: 'cal-head' },
+      h('button', { class: 'icon-btn', title: 'Mese precedente', 'aria-label': 'Mese precedente', onclick: () => move(-1) }, '‹'),
+      h('h2', { style: { textTransform: 'capitalize' } }, MF.format(new Date(y, m, 1))),
+      h('button', { class: 'icon-btn', title: 'Mese successivo', 'aria-label': 'Mese successivo', onclick: () => move(1) }, '›'),
+      h('div', { class: 'sp' }),
+      h('span', { class: 'stat' }, monthCount ? `${monthCount} ${monthCount === 1 ? 'uscita' : 'uscite'} nel mese` : 'nessuna uscita nel mese'),
+      h('button', { class: 'btn sm', onclick: () => { const d = new Date(); this.month = [d.getFullYear(), d.getMonth()]; this.drawCalendar(); } }, 'Oggi')));
+    const grid = h('div', { class: 'cal-grid' });
+    for (const d of ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom']) grid.append(h('div', { class: 'cal-dow' }, d));
+    const first = new Date(y, m, 1), skip = (first.getDay() + 6) % 7, days = new Date(y, m + 1, 0).getDate();
+    for (let i = 0; i < skip; i++) grid.append(h('div'));
+    for (let d = 1; d <= days; d++) {
+      const key = `${y}-${p2(m + 1)}-${p2(d)}`, all = byDay.get(key) || [];
+      const list = all.filter(s => s.meta.sources.length || s.meta.cameras.length); // illumino solo i giorni con dati
+      const vids = list.reduce((a, s) => a + s.meta.cameras.reduce((b, c) => b + c.clips.length, 0), 0), srcs = list.reduce((a, s) => a + s.meta.sources.length, 0);
+      const cls = 'cal-day' + (list.length ? ' has' : '') + (key === today ? ' today' : '') + (key > today ? ' future' : '');
+      grid.append(h('button', { class: cls, title: list.length ? list.map(s => s.meta.title).join(' · ') : (key > today ? '' : 'Nessun dato: clic per caricare i file di questo giorno'), onclick: () => this.openDay(key, list.length ? list : all) },
+        h('b', null, d),
+        list.length ? h('span', { class: 'cal-marks' }, vids ? '🎥' : '', srcs ? '📈' : '', list.length > 1 ? `×${list.length}` : '') : null));
+    }
+    cal.append(grid);
+    // elenco delle uscite del mese, sotto il calendario
+    this.dayList.textContent = '';
+    const inMonth = this.sessions.filter(s => (s.meta.date || '').startsWith(`${y}-${p2(m + 1)}`) && (s.meta.sources.length || s.meta.cameras.length));
+    if (inMonth.length) { this.dayList.append(h('div', { class: 'month' }, 'Uscite del mese')); this.fill(this.dayList, inMonth); }
+  },
+  /* un giorno = un'uscita: se non c'è la creo e vado a caricare i file */
+  async openDay(date, list) {
+    if (list.length === 1) {
+      const s = list[0], empty = !s.meta.sources.length && !s.meta.cameras.length;
+      Router.go(`#/uscita/${encodeURIComponent(s.folder)}/${empty ? 'dati' : 'viewer'}`);
+      return;
+    }
+    if (list.length > 1) { this.fill(this.dayList, list); this.dayList.scrollIntoView({ behavior: 'smooth' }); return; }
+    if (date > ymdOf(Date.now())) { toast('È un giorno nel futuro.'); return; }
+    const folder = await Store.dayFolder(date);
+    Router.go(`#/uscita/${encodeURIComponent(folder)}/dati`);
+  },
+  fill(list, items) {
     list.textContent = '';
-    const q = this.q.trim().toLowerCase();
-    const items = this.sessions.filter(s => !q || [s.meta.title, s.meta.place, s.meta.helm, s.meta.crew, s.meta.notes, s.meta.goals, s.folder].join(' ').toLowerCase().includes(q));
+    items = items || this.sessions;
     if (!this.sessions.length && Store.kind === 'fs') {
       const hint = h('div');
       list.append(hint);

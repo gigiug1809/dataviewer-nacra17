@@ -136,6 +136,13 @@ const Store = {
     await this.writeJSON(`${folder}/${SESSION_FILE}`, meta);
     return folder;
   },
+  /* l'uscita di un giorno: la cerco, e se non c'è la creo (un giorno = un'uscita) */
+  async dayFolder(date) {
+    const all = await this.listSessions();
+    const found = all.find(s => s.meta.date === date);
+    if (found) return found.folder;
+    return this.createSession(newSessionMeta({ title: 'Uscita', date }));
+  },
   saveSession(folder, meta) { meta.modified = Date.now(); return this.writeJSON(`${folder}/${SESSION_FILE}`, meta); },
   async libSettings() { return (await this.readJSON(LIB_FILE)) || { templates: [] }; },
   saveLib(obj) { return this.writeJSON(LIB_FILE, obj); }

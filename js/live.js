@@ -10,7 +10,7 @@ const LIVE_G = ['lat', 'lon', 'gps_speed_kn', 'gps_course', 'gps_hacc_m'];
 class LiveSession extends Session {
   constructor(code, server) {
     const saved = LS.get('live.' + code, {});
-    if (LS.get('liveLayoutVer', 0) < 2) { LS.set('liveLayout', null); LS.set('liveLayoutVer', 2); }
+    if (LS.get('liveLayoutVer', 0) < 3) { LS.set('liveLayout', null); LS.set('liveLayoutVer', 3); }
     super(null, newSessionMeta({ title: `Live ${code}`, date: ymdOf(Date.now()), events: saved.events || [], layout: LS.get('liveLayout', null), view: { win: saved.win ?? 120000 } }));
     this.live = true; this.follow = true; this.code = code; this.server = server;
     this.cols = {}; for (const k of [...LIVE_M, ...LIVE_G]) this.cols[k] = { t: [], v: [] };
@@ -33,7 +33,9 @@ class LiveSession extends Session {
     let m;
     try { m = JSON.parse(new TextDecoder().decode(payload)); } catch (e) { return; }
     this.lastRx = Date.now();
-    if (m.v !== 1 || this.seen.has(m.s)) return; // pacchetto già ricevuto (dopo una riconnessione)
+    if (m.v !== 1) return;
+    if (m.r && m.r !== this.recId) { if (this.recId) this.newRecording(m.r); this.recId = m.r; }
+    if (this.seen.has(m.s)) return; // pacchetto già ricevuto (dopo una riconnessione)
     this.seen.add(m.s);
     this.packets++;
     const add = (key, t, v) => {
@@ -43,6 +45,10 @@ class LiveSession extends Session {
       c.t.push(t); c.v.push(v);
     };
     for (const r of m.m || []) { const t = m.b + r[0]; LIVE_M.forEach((k, i) => add(k, t, r[i + 1])); this.lastSampleT = Math.max(this.lastSampleT, t); }
+    for (const k of m.e || []) { // [tipo, dt]: "s" inizio tratto, "f" fine tratto
+      const t = m.b + k[1];
+      if (k[0] === 's') Live.segmentStart(this, t, 'telefono'); else if (k[0] === 'f') Live.segmentStop(this, t, 'telefono');
+    }
     for (const r of m.g || []) { const t = m.b + r[0]; LIVE_G.forEach((k, i) => add(k, t, r[i + 1])); this.lastSampleT = Math.max(this.lastSampleT, t); }
     this.lastSampleRx = Date.now();
     this.dirty = true;
@@ -69,6 +75,8 @@ class LiveSession extends Session {
     this.dirty = false;
   }
   hasData() { return this.channelMap.size > 0; }
+  // il telefono ha iniziato una registrazione nuova: i numeri dei pacchetti ripartono da zero
+  newRecording() { this.seen.clear(); }
   dispose() { if (this.client) this.client.close(); }
 
   /* CSV nello stesso formato del file del telefono: il Dataviewer lo rilegge come un'uscita normale */
@@ -76,7 +84,7 @@ class LiveSession extends Session {
     const cols = ['lat', 'lon', 'gps_speed_kn', 'gps_course', 'gps_hacc_m', 'heel_deg', 'pitch_deg', 'heading_deg', 'roll_rate_dps', 'yaw_rate_dps', 'acc_surge_g', 'acc_heave_g', 'acc_peak_g'];
     const rows = new Map();
     for (const k of cols) { const c = this.cols[k]; c.t.forEach((t, i) => { let r = rows.get(t); if (!r) { r = {}; rows.set(t, r); } r[k] = c.v[i]; }); }
-    const lines = [`# Registratore N17 · ricevuto live dal Dataviewer · codice ${this.code}`, ['time_utc', ...cols].join(','), ['ISO8601', 'deg', 'deg', 'kn', 'deg', 'm', 'deg', 'deg', 'deg', 'deg/s', 'deg/s', 'g', 'g', 'g'].join(',')];
+    const lines = [`# Registratore N17 · ricevuto live dal Dataviewer · codice ${this.code}`, `# registrazione ${this.recId || 'SCONOSCIUTA'}`, ['time_utc', ...cols].join(','), ['ISO8601', 'deg', 'deg', 'kn', 'deg', 'm', 'deg', 'deg', 'deg', 'deg/s', 'deg/s', 'g', 'g', 'g'].join(',')];
     for (const t of [...rows.keys()].sort((a, b) => a - b)) { const r = rows.get(t); lines.push([new Date(t).toISOString(), ...cols.map(k => r[k] ?? '')].join(',')); }
     return lines.join('\n');
   }
@@ -165,35 +173,63 @@ const Live = {
       h('span', { class: 'chip', style: { background: phoneOk ? 'rgba(25,158,112,.18)' : 'rgba(201,133,0,.18)' } }, h('span', { class: 'dot', style: { background: phoneOk ? 'var(--good)' : 'var(--warn)' } }), `LIVE ${S.code} · ${txt}`),
       st.bat != null ? h('span', { class: 'small muted' }, `batteria ${Math.round(st.bat * 100)}%`) : null,
       S.follow ? null : h('button', { class: 'btn sm primary', onclick: () => { S.follow = true; Viewer.requestDraw(); this.renderBar(S); } }, 'Torna al live'),
+      (() => {
+        const open = S.meta.events.find(e => e.type === 'tratto' && e.t2 == null);
+        return open
+          ? h('button', { class: 'btn sm danger', style: { fontWeight: 700 }, title: 'Chiude il tratto e mostra il riepilogo', onclick: () => this.segmentStop(S) }, `■ Fine tratto · ${fmtDur(S.t1 - open.t)}`)
+          : h('button', { class: 'btn sm primary', title: 'Da adesso parte il tratto da analizzare', onclick: () => this.segmentStart(S) }, '▶ Inizia tratto');
+      })(),
       h('button', { class: 'btn sm', title: 'Salva i dati ricevuti come uscita (o scarica il CSV)', onclick: () => this.saveAs(S) }, 'Salva')].filter(Boolean));
   },
+  /* tratti: l'allenatore (o il telefono) segna inizio e fine di un pezzo di allenamento */
+  segmentStart(S, t = S.t1, from = 'allenatore') {
+    if (S.meta.events.some(e => e.type === 'tratto' && e.t2 == null)) return;
+    const n = S.meta.events.filter(e => e.type === 'tratto').length + 1;
+    S.addEvent({ t: Math.round(t), t2: null, type: 'tratto', note: `Tratto ${n}`, by: from });
+    Viewer.eventsChanged(); this.renderBar(S);
+    toast(`Tratto ${n} iniziato${from === 'telefono' ? ' dal telefono' : ''}.`, 2500);
+  },
+  segmentStop(S, t = S.t1, from = 'allenatore') {
+    const open = S.meta.events.find(e => e.type === 'tratto' && e.t2 == null);
+    if (!open) return;
+    open.t2 = Math.max(open.t + 1000, Math.round(t));
+    S.save(); Viewer.eventsChanged(); this.renderBar(S);
+    if (Viewer.S === S) showRangeAnalysis(Viewer, open.t, open.t2, `${open.note} · riepilogo${from === 'telefono' ? ' (chiuso dal telefono)' : ''}`);
+  },
+  /* salvo nell'uscita del giorno (un giorno = un'uscita), senza doppioni con il file del telefono */
   async saveAs(S) {
     if (!S.hasData()) { toast('Non sono ancora arrivati dati.'); return; }
     const csv = S.toCSV();
-    const name = `N17_live_${S.code}_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.csv`;
-    if (!Store.root || Store.kind !== 'fs') { downloadText(name, csv); toast('Ho scaricato il CSV: trascinalo in un\'uscita della libreria per analizzarlo.', 7000); return; }
+    const name = `N17_live_${S.recId || S.code}.csv`;
+    if (!Store.root) { const rec = await Store.remembered(); if (rec) { try { await Store.reopen(rec); } catch (e) { /* resta il download */ } } }
+    if (!Store.root) { downloadText(name, csv); toast('Ho scaricato il CSV: trascinalo nel giorno giusto del calendario per analizzarlo.', 7000); return; }
     try {
-      const meta = newSessionMeta({ title: `Live ${S.code}`, date: ymdOf(S.t0), events: S.meta.events.slice(), notes: 'Dati ricevuti in diretta dal Registratore N17.' });
-      const folder = await Store.createSession(meta);
+      const folder = await Store.dayFolder(ymdOf(S.t0));
+      const meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
+      const ids = new Set(meta.events.map(e => e.id));
+      for (const e of S.meta.events) if (!ids.has(e.id)) meta.events.push(e);
+      meta.events.sort((a, b) => a.t - b.t);
+      const full = meta.sources.find(x => x.kind === 'iPhone' && !x.live && S.recId && x.recId === S.recId);
+      if (full) { await Store.saveSession(folder, meta); toast('Quel giorno ha già il file completo del telefono: ho aggiunto solo eventi e tratti.', 7000); return; }
       await Store.writeText(`${folder}/dati/${name}`, csv);
       const tab = parseTable(csv), cols = analyzeCols(tab), cfg = guessSourceConfig(tab, cols);
-      meta.sources.push(Object.assign({ id: uid('s'), file: `dati/${name}`, name: 'iPhone (live)' }, cfg));
+      meta.sources = meta.sources.filter(x => !(x.live && x.file === `dati/${name}`)); // un salvataggio successivo sostituisce il precedente
+      meta.sources.push(Object.assign({ id: uid('s'), file: `dati/${name}`, name: 'iPhone (live)' }, cfg, { live: true, recId: S.recId || null }));
       await Store.saveSession(folder, meta);
-      toast(`Salvata l'uscita "${meta.title}" nella libreria. Il live continua.`, 7000);
+      toast(`Salvato nel giorno ${fmtDateLong(meta.date)}. Quando importi il file completo del telefono, prenderà il posto di questi dati. Il live continua.`, 8000);
     } catch (e) { downloadText(name, csv); toast('Non riesco a scrivere nella libreria: ho scaricato il CSV. ' + errMsg(e), 8000, 'bad'); }
   }
 };
 
-/* layout del live: numeri grandi, velocità, assetto, mappa, eventi */
+/* layout del live: numeri grandi, medie 10 s / 30 s (e del tratto), mappa, velocità, assetto, eventi */
 function liveLayout(S) {
   const has = k => ['live:' + k]; // canali attesi: i pannelli si riempiono appena arrivano
-  const nums = [...has('gps_speed_kn'), ...has('heel_deg'), ...has('pitch_deg'), ...has('heading_deg'), ...has('gps_course'), ...has('yaw_rate_dps')];
   return [
-    { type: 'numbers', x: 0, y: 0, w: 6, h: 14, cfg: { ids: nums, avg: 10 } },
-    { type: 'chart', x: 6, y: 0, w: 10, h: 7, cfg: { title: 'Velocità', ids: has('gps_speed_kn') } },
-    { type: 'chart', x: 6, y: 7, w: 10, h: 7, cfg: { title: 'Assetto', ids: [...has('heel_deg'), ...has('pitch_deg')] } },
-    { type: 'map', x: 16, y: 0, w: 8, h: 14, cfg: { follow: true, trail: 120 } },
-    { type: 'chart', x: 0, y: 14, w: 12, h: 10, cfg: { title: 'Rotazione e accelerazioni', ids: [...has('yaw_rate_dps'), ...has('acc_peak_g')] } },
-    { type: 'events', x: 12, y: 14, w: 12, h: 10, cfg: {} }
+    { type: 'numbers', x: 0, y: 0, w: 5, h: 13, cfg: { ids: [...has('gps_speed_kn'), ...has('heel_deg'), ...has('pitch_deg'), ...has('gps_course'), ...has('yaw_rate_dps')], avg: 10 } },
+    { type: 'averages', x: 5, y: 0, w: 8, h: 13, cfg: { windows: [10, 30] } },
+    { type: 'map', x: 13, y: 0, w: 11, h: 13, cfg: { follow: true, trail: 120 } },
+    { type: 'chart', x: 0, y: 13, w: 8, h: 11, cfg: { title: 'Velocità', ids: has('gps_speed_kn') } },
+    { type: 'chart', x: 8, y: 13, w: 8, h: 11, cfg: { title: 'Sbandamento e trim', ids: [...has('heel_deg'), ...has('pitch_deg')] } },
+    { type: 'events', x: 16, y: 13, w: 8, h: 11, cfg: {} }
   ];
 }

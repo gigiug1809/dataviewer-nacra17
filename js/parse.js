@@ -73,12 +73,15 @@ function parseTable(text) {
   const delim = detectDelim(lines);
   // Cyclops chiude ogni riga con un separatore: lì l'ultima cella vuota non è una colonna.
   // Lo decido sul file intero, non riga per riga (altrimenti si perdono le righe che finiscono con un valore vuoto)
-  const sample = lines.filter(l => l.trim()).slice(0, 200);
-  const trailing = sample.filter(l => l.replace(/[ \r]+$/, '').endsWith(delim)).length >= sample.length * 0.9;
+  // Cyclops chiude ogni riga di dati con un separatore in più rispetto all'intestazione: lì l'ultima cella
+  // vuota non è una colonna. Lo tolgo solo se la riga ha proprio una cella in più dell'intestazione
+  // (nei file del telefono e del live le righe hanno lo stesso numero di celle, anche se l'ultima è vuota).
+  const headLine = lines.find(l => l.trim() && !l.trim().startsWith('#') && splitCSVLine(l, delim).length >= 2);
+  const headN = headLine ? splitCSVLine(headLine, delim).length : 0;
   const rows = lines.map(l => {
     if (!l.trim()) return null;
     const r = splitCSVLine(l, delim);
-    if (trailing && r.length > 1 && r[r.length - 1] === '') r.pop();
+    if (r.length === headN + 1 && r[r.length - 1] === '') r.pop();
     return r;
   });
   const freq = new Map();
@@ -195,7 +198,9 @@ function guessSourceConfig(tab, cols) {
   if (isPhone) {
     // file del Registratore N17 per iPhone: nomi e ruoli già noti
     for (const c of columns) { const m = PHONE_COLS[c.col]; if (m) Object.assign(c, { name: m[0], unit: m[1], role: m[2], use: m[3] }); else c.use = false; }
-    return { timeCol: tc ? tc.j : -1, sensorCol: -1, tz: 'utc', offset: 0, kind: 'iPhone', columns };
+    const rid = /registrazione\s+([A-Z0-9]{6,})/.exec(tab.meta || '');
+    const live = /ricevuto live/.test(tab.meta || '');
+    return { timeCol: tc ? tc.j : -1, sensorCol: -1, tz: 'utc', offset: 0, kind: 'iPhone', columns, recId: rid ? rid[1] : null, live };
   }
   const kind = isCyclops ? 'Cyclops' : isVakaros ? 'Vakaros' : 'CSV';
   return { timeCol: tc ? tc.j : -1, sensorCol: sensorCol ? sensorCol.j : -1, tz: 'local', offset: 0, kind, columns };

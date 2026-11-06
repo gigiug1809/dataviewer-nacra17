@@ -8,7 +8,8 @@ const EVENT_TYPES = [
   { id: 'boa', label: 'Boa', key: 'b', slot: 3 },
   { id: 'errore', label: 'Errore', key: 'e', slot: 4 },
   { id: 'nota', label: 'Nota', key: 'n', slot: 5 },
-  { id: 'regolazione', label: 'Regolazione', key: 'r', slot: 6 },
+  { id: 'regolazione', label: 'Regolazione', key: 'r', slot: -1 },
+  { id: 'tratto', label: 'Tratto', key: '', slot: 6 },
   { id: 'scuffia', label: 'Scuffia / nosedive', key: 'c', slot: 7 },
   { id: 'manovra', label: 'Manovra', key: 'm', slot: -1 }
 ];

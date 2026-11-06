@@ -323,16 +323,29 @@ class ChartPanel {
   bindMouse(lane) {
     const over = lane.u.over;
     let down = null;
-    over.addEventListener('mousedown', e => { down = { x: e.clientX, t: this.V.t, moved: false }; this.V.scrubbing = true; e.preventDefault(); });
+    const tAt = e => { const r = over.getBoundingClientRect(); return lane.u.posToVal(e.clientX - r.left, 'x') * 1000; };
+    over.addEventListener('mousedown', e => {
+      if (e.button !== 0) return;
+      // Maiusc + trascina = seleziono un tratto da analizzare
+      if (e.shiftKey) { down = { sel: true, a: tAt(e) }; this.V.inT = down.a; this.V.outT = null; this.V.requestDraw(); e.preventDefault(); return; }
+      down = { x: e.clientX, t: this.V.t, moved: false }; this.V.scrubbing = true; e.preventDefault();
+    });
     window.addEventListener('mousemove', this._mm = e => {
       if (!down) return;
+      if (down.sel) { const b = tAt(e); this.V.inT = Math.min(down.a, b); this.V.outT = Math.max(down.a, b); this.V.requestDraw(); return; }
       const dx = e.clientX - down.x;
       if (Math.abs(dx) > 3) down.moved = true;
       if (down.moved) { const u = lane.u, w = (u.scales.x.max - u.scales.x.min) * 1000; this.V.seek(down.t - dx / u.over.clientWidth * w); }
     });
     window.addEventListener('mouseup', this._mu = e => {
       if (!down) return;
-      if (!down.moved) { const r = over.getBoundingClientRect(); this.V.seek(lane.u.posToVal(e.clientX - r.left, 'x') * 1000); }
+      if (down.sel) {
+        const a = this.V.inT, b = this.V.outT; down = null;
+        if (a != null && b != null && b - a > 2000) { this.V.updateRange(); showRangeAnalysis(this.V, a, b); }
+        else { this.V.inT = this.V.outT = null; this.V.updateRange(); }
+        return;
+      }
+      if (!down.moved) this.V.seek(tAt(e));
       down = null; this.V.scrubbing = false;
     });
     over.addEventListener('wheel', e => {
@@ -369,8 +382,15 @@ class ChartPanel {
       ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent-soft');
       ctx.fillRect(a, top, b - a, height);
     }
-    // eventi
+    // tratti (eventi con inizio e fine)
     const x0 = u.scales.x.min * 1000, x1 = u.scales.x.max * 1000;
+    for (const ev of this.S.meta.events) {
+      if (ev.type !== 'tratto') continue;
+      const e2 = ev.t2 ?? V.t;
+      if (e2 < x0 || ev.t > x1) continue;
+      const a = u.valToPos(Math.max(ev.t, x0) / 1000, 'x', true), b = u.valToPos(Math.min(e2, x1) / 1000, 'x', true);
+      ctx.fillStyle = eventColor('tratto') + '22'; ctx.fillRect(a, top, b - a, height);
+    }
     ctx.lineWidth = 1 * dpr;
     for (const ev of this.S.meta.events) {
       if (ev.t < x0 || ev.t > x1) continue;
@@ -436,6 +456,7 @@ class MapPanel {
   title() { return 'Mappa'; }
   headButtons() {
     const b = h('button', { class: 'icon-btn' + (this.cfg.follow ? ' on' : ''), title: 'Segui la barca', 'aria-label': 'Segui la barca', html: ICONS.follow });
+    this.followBtn = b;
     b.onclick = () => { this.cfg.follow = !this.cfg.follow; b.classList.toggle('on', this.cfg.follow); this.V.layoutChanged(); this.V.requestDraw(); };
     return [b];
   }
@@ -468,13 +489,23 @@ class MapPanel {
     this.el.append(this.legend);
     this.drawTrack();
     this.drawEvents();
+    // clic sulla traccia = vai a quell'istante. Solo se il clic è proprio sulla traccia (14 px),
+    // non dopo aver trascinato la mappa e non nel doppio clic che serve a ingrandire.
+    let clickTimer = 0, moved = false;
+    this.map.on('mousedown', () => { moved = false; });
+    this.map.on('movestart', () => { moved = true; });
+    this.map.on('dblclick', () => { clearTimeout(clickTimer); });
     this.map.on('click', e => {
-      const P = this.map.latLngToContainerPoint(e.latlng);
-      let best = null, bd = 30 * 30;
-      for (const p of this.pts) { const q = this.map.latLngToContainerPoint([p[1], p[2]]); const d = (q.x - P.x) ** 2 + (q.y - P.y) ** 2; if (d < bd) { bd = d; best = p; } }
-      if (best) this.V.seek(best[0]);
+      if (moved) return;
+      clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => {
+        const P = this.map.latLngToContainerPoint(e.latlng);
+        let best = null, bd = 14 * 14;
+        for (const p of this.pts) { const q = this.map.latLngToContainerPoint([p[1], p[2]]); const d = (q.x - P.x) ** 2 + (q.y - P.y) ** 2; if (d < bd) { bd = d; best = p; } }
+        if (best) this.V.seek(best[0]);
+      }, 260);
     });
-    this.map.on('dragstart', () => { if (this.cfg.follow) { this.cfg.follow = false; this.V.layoutChanged(); } });
+    this.map.on('dragstart', () => { if (this.cfg.follow) { this.cfg.follow = false; if (this.followBtn) this.followBtn.classList.remove('on'); this.V.layoutChanged(); } });
     this.V.requestDraw();
   }
   colorCh() { return this.S.ch(this.cfg.colorBy) || this.S.sog; }
@@ -665,7 +696,7 @@ class EventsPanel {
       const tr = h('tr', { onclick: () => { this.V.seek(ev.t - this.V.preroll); }, ondblclick: () => this.V.editEvent(ev) },
         h('td', null, fmtClock(ev.t)),
         h('td', null, h('span', { class: 'chip' }, h('span', { class: 'dot', style: { background: eventColor(ev.type) } }), et.label)),
-        h('td', { class: 'note' }, ev.note || (ev.auto ? h('span', { class: 'faint' }, 'trovata in automatico') : '')),
+        h('td', { class: 'note' }, ev.note || (ev.auto ? h('span', { class: 'faint' }, 'trovata in automatico') : ''), ev.type === 'tratto' ? [h('span', { class: 'faint' }, ` · ${ev.t2 ? fmtDur(ev.t2 - ev.t) : 'in corso'} `), ev.t2 ? h('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); showRangeAnalysis(this.V, ev.t, ev.t2, ev.note || 'Tratto'); } }, 'Analizza') : null] : null),
         man.length ? [h('td', null, mm ? fmtNum(mm.sIn, 1) : ''), h('td', null, mm ? fmtNum(mm.sMin, 1) : ''), h('td', null, mm ? fmtNum(mm.sOut, 1) : ''), h('td', null, mm ? fmtNum(mm.lost, 0) : '')] : null,
         h('td', null, h('button', { class: 'icon-btn x', title: 'Modifica', 'aria-label': 'Modifica', onclick: e => { e.stopPropagation(); this.V.editEvent(ev); } }, '✎'),
           h('button', { class: 'icon-btn x', title: 'Elimina', 'aria-label': 'Elimina', onclick: e => { e.stopPropagation(); this.V.removeEvent(ev); } }, '✕')));
@@ -727,6 +758,8 @@ class StatsPanel {
     const V = this.V, S = this.S;
     const m = this.cfg.mode;
     if ((m === 'auto' || m === 'sel') && V.inT != null && V.outT != null) return [V.inT, V.outT, `Selezione ${fmtClock(V.inT)}–${fmtClock(V.outT)}`];
+    const seg = m === 'auto' ? segmentAt(S, t) : null;
+    if (seg) return [seg.t, seg.t2 ?? t, `${seg.note || 'Tratto'} ${fmtClock(seg.t)}–${fmtClock(seg.t2 ?? t)}`];
     if (m === 'leg' || m === 'auto') {
       const ev = S.meta.events; let a = S.t0, b = S.t1;
       for (const e of ev) { if (e.t <= t) a = e.t; else { b = e.t; break; } }

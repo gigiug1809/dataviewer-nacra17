@@ -81,6 +81,7 @@ const Viewer = {
     winSel.onchange = () => { this.win = Number(winSel.value); this.requestDraw(); this.saveViewSoon(); };
     this.winSel = winSel;
     const lockBtn = h('button', { class: 'icon-btn' + (this.locked ? ' on' : ''), title: 'Blocca la disposizione dei pannelli', 'aria-label': 'Blocca la disposizione' }, this.locked ? '🔒' : '🔓');
+    this.lockBtn = lockBtn;
     lockBtn.onclick = () => { this.locked = !this.locked; lockBtn.classList.toggle('on', this.locked); lockBtn.textContent = this.locked ? '🔒' : '🔓'; this.grid.setStatic(this.locked); this.gridEl.classList.toggle('locked', this.locked); this.saveViewSoon(); };
     const top = h('div', { class: 'vtop' },
       h('button', { class: 'btn ghost sm', onclick: () => Router.go('#/') }, '← Libreria'),
@@ -107,6 +108,7 @@ const Viewer = {
     const layout = (m.layout && m.layout.length ? m.layout : defaultLayout(S));
     for (const p of layout) this.addPanel(p, false);
     this.grid.on('change', () => this.layoutChanged());
+    this.gridWrap.addEventListener('contextmenu', e => this.contextMenu(e), true);
     const firstOpen = !m.layout;
     if (firstOpen) { m.layout = this.layoutData(); S.save(); }
     if (!S.live) this.checkNewData(firstOpen);
@@ -207,15 +209,38 @@ const Viewer = {
     modal({ title: `Impostazioni · ${PANEL_TYPES[inst._rec.type].label}`, body: st.el, wide: true, actions: [{ label: 'Annulla' }, { label: 'Applica', kind: 'primary', run: () => { st.apply(); this.layoutChanged(); if (inst._rec.type === 'video') this.rebuildPanels(p => p.id === inst._rec.id); this.requestDraw(); } }] });
   },
   addMenu(anchor) {
-    const items = Object.entries(PANEL_TYPES).map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => {
-      const cfg = {};
-      if (type === 'video') { const used = [...this.panels.values()].filter(r => r.type === 'video').map(r => r.cfg.cam); const c = this.S.meta.cameras.find(c => !used.includes(c.id)) || this.S.meta.cameras[0]; cfg.cam = c && c.id; }
-      const sz = { video: [8, 10], chart: [8, 8], map: [7, 9], numbers: [5, 8], events: [8, 9], stats: [6, 7], coverage: [8, 5] }[type] || [6, 6];
-      const rec = this.addPanel({ type, w: sz[0], h: sz[1], cfg });
-      if (rec) setTimeout(() => rec.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
-      if (rec && ['chart', 'numbers', 'stats'].includes(type)) this.panelSettings(rec.inst);
-    } }));
-    menu(anchor, items);
+    menu(anchor, Object.entries(PANEL_TYPES).map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => this.addTypedPanel(type) })));
+  },
+  async contextMenu(e) {
+    e.preventDefault(); e.stopPropagation();
+    const item = e.target.closest('.grid-stack-item');
+    const rec = item ? [...this.panels.values()].find(r => r.el === item) : null;
+    const cell = this.grid.getCellFromPixel({ left: e.clientX, top: e.clientY }, false);
+    const at = { x: Math.max(0, Math.min(COLS - 6, cell.x)), y: Math.max(0, cell.y) };
+    const add = Object.entries(PANEL_TYPES).map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => this.addTypedPanel(type, rec ? null : at) }));
+    const lib = await Store.libSettings().catch(() => ({ templates: [] }));
+    const items = [];
+    if (rec) {
+      items.push({ head: PANEL_TYPES[rec.type].label });
+      items.push({ label: '⚙︎  Impostazioni del pannello…', run: () => this.panelSettings(rec.inst) });
+      items.push({ label: '⧉  Duplica', run: () => { const n = rec.el.gridstackNode; this.addPanel({ type: rec.type, w: n.w, h: n.h, cfg: JSON.parse(JSON.stringify(rec.cfg)) }); } });
+      items.push({ label: '✕  Chiudi il pannello', run: () => this.removePanel(rec.id) });
+      items.push({ sep: true });
+    }
+    items.push({ head: rec ? 'Aggiungi un pannello' : 'Aggiungi qui un pannello' }, ...add, { sep: true });
+    items.push({ label: this.locked ? '🔓  Sblocca la disposizione' : '🔒  Blocca la disposizione', run: () => this.lockBtn.click() });
+    items.push({ label: 'Salva il layout come modello…', run: () => this.saveTemplate(lib) });
+    for (const tp of lib.templates) items.push({ label: `Applica il modello "${tp.name}"`, run: () => this.applyTemplate(tp) });
+    items.push({ label: 'Ripristina il layout predefinito', run: () => this.applyLayout(this.S.live ? liveLayout(this.S) : defaultLayout(this.S)) });
+    menu({ getBoundingClientRect: () => ({ left: e.clientX, bottom: e.clientY, top: e.clientY }) }, items);
+  },
+  addTypedPanel(type, at) {
+    const cfg = {};
+    if (type === 'video') { const used = [...this.panels.values()].filter(r => r.type === 'video').map(r => r.cfg.cam); const c = this.S.meta.cameras.find(c => !used.includes(c.id)) || this.S.meta.cameras[0]; cfg.cam = c && c.id; }
+    const sz = { video: [8, 10], chart: [8, 8], map: [7, 9], numbers: [5, 8], events: [8, 9], stats: [6, 7], coverage: [8, 5], averages: [7, 10] }[type] || [6, 6];
+    const rec = this.addPanel(Object.assign({ type, w: sz[0], h: sz[1], cfg }, at || {}));
+    if (rec) setTimeout(() => rec.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
+    if (rec && ['chart', 'numbers', 'stats'].includes(type)) this.panelSettings(rec.inst);
   },
   async layoutMenu(anchor) {
     const lib = await Store.libSettings();
@@ -392,8 +417,15 @@ const Viewer = {
       ctx.fillStyle = col('--accent-soft'); ctx.fillRect(a, 12, b - a, H - 12);
       ctx.fillStyle = col('--accent'); ctx.fillRect(a, 12, 1.5, H - 12); if (this.outT != null) ctx.fillRect(b - 1.5, 12, 1.5, H - 12);
     }
+    // tratti
+    for (const ev of S.meta.events) {
+      if (ev.type !== 'tratto') continue;
+      const a = X(ev.t), b = X(ev.t2 ?? this.t);
+      ctx.fillStyle = eventColor('tratto') + '40'; ctx.fillRect(a, 12, Math.max(2, b - a), H - 12);
+    }
     // eventi
     for (const ev of S.meta.events) {
+      if (ev.type === 'tratto') continue;
       const x = X(ev.t); ctx.fillStyle = eventColor(ev.type);
       ctx.beginPath(); ctx.moveTo(x, H - 9); ctx.lineTo(x + 4, H - 1); ctx.lineTo(x - 4, H - 1); ctx.fill();
     }
@@ -415,6 +447,7 @@ const Viewer = {
     if (!this.rangeEl) return;
     this.rangeEl.textContent = '';
     if (this.inT != null) this.rangeEl.append(`Selezione ${fmtClock(this.inT)}${this.outT != null ? ' – ' + fmtClock(this.outT) + ' (' + fmtDur(this.outT - this.inT) + ')' : ' – …'}`,
+      this.outT != null ? h('button', { class: 'btn sm primary', onclick: () => showRangeAnalysis(this, this.inT, this.outT) }, 'Analizza') : null,
       this.outT != null ? h('button', { class: 'btn sm', onclick: () => this.exportRange() }, 'Esporta CSV') : null,
       h('button', { class: 'icon-btn', title: 'Togli la selezione (X)', 'aria-label': 'Togli la selezione', onclick: () => this.clearRange() }, '✕'));
     this.requestDraw(); this.saveViewSoon();
@@ -521,7 +554,7 @@ const Viewer = {
   },
   help() {
     const rows = [['Spazio', 'Play / pausa'], ['← →', 'Indietro / avanti 1 s'], ['Maiusc + ← →', '10 s'], ['Alt + ← →  oppure  , .', 'Un fotogramma'], ['↑ ↓', 'Velocità di riproduzione'], ['[ ]', 'Evento precedente / successivo'], ['I  O  X', 'Inizio, fine, togli selezione'],
-      ...EVENT_TYPES.map(e => [e.key.toUpperCase(), `Segna: ${e.label}${e.id === 'nota' ? ' (con testo)' : ''}`]), ['⌘ Z', 'Annulla l\'ultimo evento segnato']];
+      ...EVENT_TYPES.filter(e => e.key).map(e => [e.key.toUpperCase(), `Segna: ${e.label}${e.id === 'nota' ? ' (con testo)' : ''}`]), ['⌘ Z', 'Annulla l\'ultimo evento segnato'], ['Maiusc + trascina', 'Su un grafico: seleziona un tratto e lo analizza'], ['Tasto destro', 'Sulla dashboard: aggiungi o modifica i pannelli']];
     modal({ title: 'Scorciatoie da tastiera', body: h('div', null, h('div', { class: 'help-grid' }, rows.flatMap(([a, b]) => [h('span', null, ...a.split('  ').map((x, i) => [i ? ' · ' : '', h('span', { class: 'kbd' }, x)])), h('span', null, b)])),
       h('p', { style: { marginTop: '14px' } }, 'Sui grafici: clic per andare a quell\'ora, trascina per scorrere, rotella per allargare o stringere la finestra. Sulla mappa: clic sulla traccia per andare a quel punto. I pannelli si spostano trascinandone la barra del titolo e si ridimensionano dai bordi.')) });
   },
@@ -545,7 +578,8 @@ function menu(anchor, items) {
   }
   document.body.append(m);
   const r = anchor.getBoundingClientRect();
-  m.style.top = (r.bottom + 4) + 'px';
+  m.style.maxHeight = (window.innerHeight - 16) + 'px'; m.style.overflowY = 'auto';
+  m.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - m.offsetHeight - 8)) + 'px';
   m.style.left = Math.min(r.left, window.innerWidth - m.offsetWidth - 8) + 'px';
   setTimeout(() => document.addEventListener('mousedown', function off(e) { if (!m.contains(e.target)) { m.remove(); document.removeEventListener('mousedown', off); } }), 0);
 }

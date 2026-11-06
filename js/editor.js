@@ -46,23 +46,27 @@ const Editor = {
     const m = this.meta, isNew = !this.folder;
     const page = h('div', { class: 'page' });
     root.append(page);
+    const day = m.date ? fmtDateLong(m.date) : 'Uscita';
+    const title = !m.title || m.title === 'Uscita' ? day : m.title;
     page.append(h('div', { class: 'topbar' },
-      h('button', { class: 'btn ghost', onclick: () => Router.go('#/') }, '← Libreria'),
-      h('div', { class: 'grow' }, h('h1', null, isNew ? 'Nuova uscita' : (m.title || 'Uscita')), !isNew ? h('div', { class: 'lib-path' }, 'Cartella: ', h('code', null, `${Store.name}/${this.folder}`)) : null),
-      !isNew ? h('button', { class: 'btn primary', onclick: () => Router.go(`#/uscita/${encodeURIComponent(this.folder)}/viewer`) }, 'Apri nel viewer →') : null));
+      h('button', { class: 'btn ghost', onclick: () => Router.go('#/') }, '← Calendario'),
+      h('div', { class: 'grow' }, h('h1', { style: { textTransform: 'capitalize' } }, isNew ? 'Nuova uscita' : title), !isNew && title !== day ? h('div', { class: 'lib-path', style: { textTransform: 'capitalize' } }, day) : null),
+      !isNew ? h('button', { class: 'btn primary', onclick: () => Router.go(`#/uscita/${encodeURIComponent(this.folder)}/viewer`) }, 'Apri la dashboard →') : null));
     const grid = h('div', { class: 'ed-grid' });
     page.append(grid);
-    grid.append(this.secInfo());
-    if (isNew) return;
+    if (isNew) { grid.append(this.secInfo()); return; }
     grid.append(this.secVideo(), this.secData(), this.secCheck());
+    // scheda facoltativa: equipaggio, vento, note
+    const det = h('details', { class: 'card', style: { padding: '12px 16px' } }, h('summary', { style: { fontSize: '14px' } }, 'Dettagli dell\'uscita (facoltativi): titolo, vento, note…'));
+    det.addEventListener('toggle', () => { if (det.open && det.children.length === 1) det.append(this.secInfo(true)); });
+    grid.append(det);
     page.append(h('div', { class: 'sticky-foot' },
-      h('span', { class: 'stat' }, 'Le modifiche si salvano da sole nella cartella dell\'uscita.'),
-      h('button', { class: 'btn', onclick: () => Router.go('#/') }, 'Torna alla libreria'),
-      h('button', { class: 'btn primary', onclick: () => Router.go(`#/uscita/${encodeURIComponent(this.folder)}/viewer`) }, 'Apri nel viewer →')));
+      h('span', { class: 'stat' }, 'Le modifiche si salvano da sole.'),
+      h('button', { class: 'btn primary', onclick: () => Router.go(`#/uscita/${encodeURIComponent(this.folder)}/viewer`) }, 'Apri la dashboard →')));
   },
 
   /* ---------- 1. Scheda dell'uscita ---------- */
-  secInfo() {
+  secInfo(inline = false) {
     const m = this.meta, isNew = !this.folder;
     const f = (label, key, attrs = {}, cls = '') => {
       const { tag = 'input', options = [], ...rest } = attrs;
@@ -72,8 +76,8 @@ const Editor = {
       inp.addEventListener('input', () => { m[key] = inp.value; if (key === 'title') { const t = $('#view-editor h1'); if (t && !isNew) t.textContent = inp.value || 'Uscita'; } this.save(); if (key === 'twd') this.renderCheck(); });
       return h('label', { class: 'f ' + cls }, label, inp);
     };
-    const sec = h('section', { class: 'card ed-sec' },
-      h('div', { class: 'ed-sec-head' }, h('h2', null, h('span', { class: 'step' }, '1'), 'Scheda dell\'uscita')),
+    const sec = h('section', { class: inline ? 'ed-sec' : 'card ed-sec', style: inline ? { marginTop: '12px' } : null },
+      inline ? null : h('div', { class: 'ed-sec-head' }, h('h2', null, 'Scheda dell\'uscita')),
       h('div', { class: 'fields' },
         f('Titolo', 'title', { placeholder: 'es. Allenamento bolina', required: true }, 'span2'),
         f('Data', 'date', { type: 'date' }),
@@ -128,7 +132,7 @@ const Editor = {
         h('span', { class: 'stat' }, 'Aggiungi a:'), camSel),
       h('div', { class: 'stat' }, 'I file vengono copiati nella cartella ', h('code', null, 'video'), ' dell\'uscita. Per file molto grandi è più veloce copiarli con il Finder in quella cartella e poi premere "Cerca nella cartella video".'), input);
     this.dropZone(drop, files => this.addVideos(files.filter(f => VIDEO_RE.test(f.name)), files));
-    sec.append(h('div', { class: 'ed-sec-head' }, h('h2', null, h('span', { class: 'step' }, '2'), 'Video'),
+    sec.append(h('div', { class: 'ed-sec-head' }, h('h2', null, h('span', { class: 'step' }, '1'), 'Video'),
       h('span', { class: 'stat' }, 'Una camera per ogni punto di ripresa (es. Prua, Poppa, Gommone). Gli spezzoni della stessa camera si mettono in fila da soli.')), drop);
 
     for (const [name, job] of this.jobs) {
@@ -286,7 +290,7 @@ const Editor = {
       h('div', { class: 'small' }, 'Orologio Garmin per la frequenza cardiaca (lo .zip di "Esporta file", oppure .fit, .tcx, .gpx) · cella di carico Cyclops (.csv) · Vakaros (.csv) · Registratore N17 dell\'iPhone (.csv) · qualsiasi CSV con una colonna ora'),
       h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn', onclick: () => input.click() }, 'Scegli i file…'), h('button', { class: 'btn ghost', onclick: () => this.garminHelp() }, 'Come scarico i dati dal Garmin?')), input);
     this.dropZone(drop, files => this.addData(files.filter(f => DATA_RE.test(f.name)), files));
-    sec.append(h('div', { class: 'ed-sec-head' }, h('h2', null, h('span', { class: 'step' }, '3'), 'Dati'),
+    sec.append(h('div', { class: 'ed-sec-head' }, h('h2', null, h('span', { class: 'step' }, '2'), 'Dati'),
       h('span', { class: 'stat' }, 'Per ogni file l\'app mostra cosa ha trovato, con un\'anteprima di ogni grandezza. Togli la spunta a quello che non ti serve.')), drop);
     for (const src of this.meta.sources) sec.append(this.srcCard(src));
   },
@@ -331,17 +335,52 @@ const Editor = {
           src = Object.assign({ id: uid('s'), file: dest, name: cfg.kind === 'CSV' ? name.replace(/\.\w+$/, '') : cfg.kind === 'Vakaros' ? 'Vakaros Atlas 2' : cfg.kind === 'iPhone' ? 'iPhone' : 'Cyclops' }, cfg);
           this.tabs.set(src.id, { tab, cols });
         }
+        // stessa registrazione del telefono già presente?
+        if (src.kind === 'iPhone' && !src.live && src.recId && this.meta.sources.some(x => x.kind === 'iPhone' && !x.live && x.recId === src.recId)) { toast('Questa registrazione del telefono è già nell\'uscita.'); continue; }
         await Store.writeText(`${this.folder}/${dest}`, data);
         this.meta.sources.push(src);
         this.save();
         this.rebuild(src, false);
+        let extra = '';
+        if (src.kind === 'iPhone' && !src.live) {
+          const rl = this.replaceLive(src), sg = this.importSegments(data);
+          if (rl) extra += ` Ha preso il posto dei dati ricevuti in live (stessa registrazione): niente doppioni, eventi e tratti restano.`;
+          if (sg) extra += ` Aggiunti ${sg} tratti segnati sul telefono.`;
+        }
         const n = ((this.channels.get(src.id) || {}).list || []).length;
-        toast(n ? `${src.name}: trovate ${n} grandezze. Nel viewer le trovi in "+ Pannello" o nell'avviso dei dati nuovi.` : `${src.name}: nessun dato letto, controlla le impostazioni qui sotto.`, 6000);
+        toast(n ? `${src.name}: trovate ${n} grandezze.${extra}` : `${src.name}: nessun dato letto, controlla le impostazioni qui sotto.`, extra ? 10000 : 6000);
       } catch (e) { toast(`${file.name}: ${errMsg(e)}`, 8000, 'bad'); }
     }
     this.renderData(); this.renderCheck();
     for (const cam of this.meta.cameras) if (cam.sync && cam.sync.method === 'gyro') delete cam.sync;
     this.runAutoSync();
+  },
+  /* il file completo del telefono prende il posto dei dati ricevuti in live della stessa registrazione
+     (stesso codice di registrazione, oppure stessi orari per i file più vecchi). Eventi e tratti restano. */
+  replaceLive(full) {
+    const span = id => { const l = (this.channels.get(id) || {}).list || []; return l.length ? [Math.min(...l.map(c => c.t[0])), Math.max(...l.map(c => c.t[c.t.length - 1]))] : null; };
+    const fs = span(full.id);
+    const lives = this.meta.sources.filter(x => x.kind === 'iPhone' && x.live && x !== full && ((full.recId && x.recId === full.recId) || (() => { const ls = span(x.id); return fs && ls && ls[0] < fs[1] && fs[0] < ls[1]; })()));
+    if (!lives.length) return 0;
+    this.meta.sources = this.meta.sources.filter(x => !lives.includes(x));
+    for (const x of lives) this.channels.delete(x.id);
+    this.save();
+    return lives.length;
+  },
+  /* tratti segnati sul telefono (tasto "Inizia / Fine tratto") scritti nel file: diventano tratti dell'uscita */
+  importSegments(text) {
+    const marks = [...text.matchAll(/^# tratto (inizio|fine) (\S+)/gm)].map(m => [m[1], Date.parse(m[2])]).filter(m => isFinite(m[1]));
+    let open = null, n = 0;
+    for (const [k, t] of marks) {
+      if (k === 'inizio') open = t;
+      else if (open != null) {
+        const dup = this.meta.events.some(e => e.type === 'tratto' && Math.abs(e.t - open) < 3000);
+        if (!dup) { this.meta.events.push({ id: uid('e'), t: open, t2: t, type: 'tratto', note: `Tratto ${this.meta.events.filter(e => e.type === 'tratto').length + 1}`, by: 'telefono' }); n++; }
+        open = null;
+      }
+    }
+    if (n) { this.meta.events.sort((a, b) => a.t - b.t); this.save(); }
+    return n;
   },
   async parseAll() {
     for (const src of this.meta.sources) {
@@ -480,7 +519,7 @@ const Editor = {
   renderCheck(sec = $('#secCheck')) {
     if (!sec) return;
     sec.textContent = '';
-    sec.append(h('div', { class: 'ed-sec-head' }, h('h2', null, h('span', { class: 'step' }, '4'), 'Controllo della sincronizzazione'),
+    sec.append(h('div', { class: 'ed-sec-head' }, h('h2', null, h('span', { class: 'step' }, '3'), 'Sincronizzazione'),
       h('span', { class: 'stat' }, 'Video e dati devono sovrapporsi sullo stesso orario. Se una barra è fuori posto, correggi l\'orologio della camera o lo spostamento del file.')));
     const rows = [];
     const m = this.meta;
