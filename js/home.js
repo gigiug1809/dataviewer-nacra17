@@ -36,6 +36,18 @@ const Home = {
     list.textContent = '';
     const q = this.q.trim().toLowerCase();
     const items = this.sessions.filter(s => !q || [s.meta.title, s.meta.place, s.meta.helm, s.meta.crew, s.meta.notes, s.meta.goals, s.folder].join(' ').toLowerCase().includes(q));
+    if (!this.sessions.length && Store.kind === 'fs') {
+      const hint = h('div');
+      list.append(hint);
+      Store.findLibrariesBelow().then(found => {
+        if (!found.length) return;
+        hint.append(h('div', { class: 'card', style: { display: 'grid', gap: '10px', marginBottom: '10px' } },
+          h('h2', null, found.length === 1 ? 'Le uscite sono in una sottocartella' : 'Ho trovato delle uscite in alcune sottocartelle'),
+          h('p', { class: 'muted' }, `Hai scelto «${Store.name}», che non contiene uscite direttamente. Le uscite sono più in basso:`),
+          ...found.map(f => h('div', { class: 'row' }, h('code', null, `${Store.name}/${f.path}`), h('div', { class: 'sp' }),
+            h('button', { class: 'btn primary', onclick: async () => { await Store.useSub(f); toast(`Libreria: ${f.path.split('/').pop()}`); this.render(); } }, 'Usa questa cartella')))));
+      });
+    }
     if (!this.sessions.length) {
       list.append(h('div', { class: 'card', style: { textAlign: 'center', padding: '36px' } },
         h('h2', null, 'Nessuna uscita in questa libreria'),

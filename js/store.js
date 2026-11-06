@@ -44,6 +44,28 @@ const Store = {
     return true;
   },
   async forget() { await KV.del('library'); this.root = null; },
+  // usa come libreria una sottocartella di quella scelta (il permesso è già dato)
+  async useSub(found) {
+    this.root = found.handle; this.kind = 'fs'; this.name = found.handle.name;
+    await KV.set('library', { kind: 'fs', handle: found.handle, name: found.handle.name });
+  },
+  /* Cerca, sotto la cartella scelta, sottocartelle che contengono uscite (fino a 3 livelli) */
+  async findLibrariesBelow(maxDepth = 3) {
+    const out = [], SKIP = /^(\.|node_modules$|lib$|js$|css$|video$|dati$|cache$|icons$)/;
+    let visits = 0;
+    const walk = async (dir, rel, depth) => {
+      if (depth > maxDepth || visits > 400 || out.length >= 5) return;
+      const subs = [];
+      for await (const [name, hnd] of dir.entries()) if (hnd.kind === 'directory' && !SKIP.test(name)) subs.push([name, hnd]);
+      for (const [name, hnd] of subs) {
+        visits++;
+        try { await hnd.getFileHandle(SESSION_FILE); if (rel) { out.push({ handle: dir, path: rel }); return; } } catch (e) { /* non è un'uscita */ }
+      }
+      for (const [name, hnd] of subs) await walk(hnd, rel ? `${rel}/${name}` : name, depth + 1);
+    };
+    try { await walk(this.root, '', 0); } catch (e) { /* cartella non leggibile */ }
+    return out;
+  },
 
   async dir(path, create = false) {
     let d = this.root;
