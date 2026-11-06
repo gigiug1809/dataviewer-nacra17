@@ -63,7 +63,7 @@ class Session {
     if (TRACK_KINDS.includes(src.kind)) {
       const f = await Store.file(this.path(src.file));
       const track = readTrack(src.kind, src.kind === 'FIT' ? await f.arrayBuffer() : await f.text());
-      if (!src.columns) src.columns = guessTrackConfig(track).columns;
+      if (!src.columns) src.columns = guessTrackConfig(track, src.kind).columns;
       return buildTrackChannels(track, src, src.id, src.name);
     }
     const text = await Store.readText(this.path(src.file));

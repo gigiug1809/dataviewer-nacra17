@@ -186,8 +186,11 @@ function readTrack(kind, data) {
   if (kind === 'FIT') return parseFIT(data);
   return parseXMLTrack(typeof data === 'string' ? data : new TextDecoder().decode(data), kind);
 }
-function guessTrackConfig(track) {
-  return { tz: 'utc', offset: 0, columns: track.fields.map(f => ({ col: f.key, name: f.name, unit: f.unit, role: f.role, use: true, k: 1, add: 0 })) };
+// Dall'orologio (Garmin) serve solo la frequenza cardiaca: posizione e velocità arrivano già
+// dal telefono e dagli altri strumenti, più precisi. Le altre grandezze restano disponibili, senza spunta.
+function guessTrackConfig(track, kind) {
+  const hrOnly = (kind === 'FIT' || kind === 'TCX' || kind === 'GPX') && track.fields.some(f => f.key === 'hr');
+  return { tz: 'utc', offset: 0, columns: track.fields.map(f => ({ col: f.key, name: f.name, unit: f.unit, role: f.role, use: hrOnly ? f.key === 'hr' : true, k: 1, add: 0 })) };
 }
 function buildTrackChannels(track, cfg, srcId, srcName) {
   const off = (Number(cfg.offset) || 0) * 1000;

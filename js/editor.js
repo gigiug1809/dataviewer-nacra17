@@ -283,7 +283,7 @@ const Editor = {
     const input = h('input', { type: 'file', accept: '.csv,.txt,.tsv,.gpx,.fit,.tcx,.zip,text/csv', multiple: true, hidden: true, onchange: e => { this.addData([...e.target.files]); e.target.value = ''; } });
     const drop = h('div', { class: 'drop' },
       h('div', null, h('b', null, 'Trascina qui i file di dati')),
-      h('div', { class: 'small' }, 'Orologio Garmin (lo .zip di "Esporta originale", oppure .fit, .tcx, .gpx) · cella di carico Cyclops (.csv) · Vakaros (.csv) · GPX del telefono · qualsiasi CSV con una colonna ora'),
+      h('div', { class: 'small' }, 'Orologio Garmin per la frequenza cardiaca (lo .zip di "Esporta file", oppure .fit, .tcx, .gpx) · cella di carico Cyclops (.csv) · Vakaros (.csv) · Registratore N17 dell\'iPhone (.csv) · qualsiasi CSV con una colonna ora'),
       h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn', onclick: () => input.click() }, 'Scegli i file…'), h('button', { class: 'btn ghost', onclick: () => this.garminHelp() }, 'Come scarico i dati dal Garmin?')), input);
     this.dropZone(drop, files => this.addData(files.filter(f => DATA_RE.test(f.name)), files));
     sec.append(h('div', { class: 'ed-sec-head' }, h('h2', null, h('span', { class: 'step' }, '3'), 'Dati'),
@@ -298,9 +298,9 @@ const Editor = {
       h('ol', { style: { margin: 0, paddingLeft: '20px', lineHeight: 1.7 } },
         h('li', null, 'Sul computer apri ', h('b', null, 'connect.garmin.com'), ' e vai su Attività.'),
         h('li', null, 'Apri l\'uscita in barca (tipo "Navigazione a vela").'),
-        h('li', null, 'In alto a destra premi l\'icona dell\'ingranaggio ⚙ e scegli ', h('b', null, '"Esporta originale"'), '.'),
+        h('li', null, 'In alto a destra premi l\'icona dell\'ingranaggio ⚙ e scegli ', h('b', null, '"Esporta file"'), ' (in alcune versioni si chiama "Esporta originale").'),
         h('li', null, 'Scarichi un file .zip: trascinalo qui così com\'è, senza aprirlo.')),
-      h('p', { class: 'muted' }, 'Dentro c\'è il file .fit con tutto quello che l\'orologio ha registrato: posizione GPS, velocità, frequenza cardiaca, temperatura, frequenza respiratoria se l\'orologio la misura, e i campi delle app di vela installate sull\'orologio. Vanno bene anche "Esporta in TCX" o "Esporta in GPX", ma contengono meno grandezze.'),
+      h('p', { class: 'muted' }, 'Dentro c\'è il file .fit con quello che l\'orologio ha registrato. Il Dataviewer ne usa la frequenza cardiaca; posizione e velocità le prende dal telefono e dagli altri strumenti. Le altre grandezze dell\'orologio restano disponibili, basta mettere la spunta. Vanno bene anche "Esporta in TCX" o "Esporta in GPX".'),
       sail.length ? h('div', null, h('b', null, 'Uscite in barca nel file che hai caricato:'),
         h('ul', { style: { margin: '6px 0 0', paddingLeft: '20px' } }, sail.map(a => h('li', { style: near.includes(a) ? { fontWeight: 700 } : null }, `${a.date} · ${a.title || a.type}${a.dur ? ' · ' + a.dur : ''}${near.includes(a) ? '  ← stesso giorno di questa uscita' : ''}`)))) : null),
       actions: [{ label: 'Ho capito', kind: 'primary' }] });
@@ -321,7 +321,7 @@ const Editor = {
         let src;
         if (kind) {
           const track = readTrack(kind, data);
-          src = Object.assign({ id: uid('s'), file: dest, kind, name: kind === 'FIT' ? 'Garmin' : name.replace(/\.\w+$/, '') }, guessTrackConfig(track));
+          src = Object.assign({ id: uid('s'), file: dest, kind, name: kind === 'FIT' ? 'Garmin' : name.replace(/\.\w+$/, '') }, guessTrackConfig(track, kind));
           this.tabs.set(src.id, { track });
         } else {
           const tab = parseTable(data), cols = analyzeCols(tab);
@@ -349,7 +349,7 @@ const Editor = {
         if (TRACK_KINDS.includes(src.kind)) {
           const f = await Store.file(`${this.folder}/${src.file}`);
           const track = readTrack(src.kind, src.kind === 'FIT' ? await f.arrayBuffer() : await f.text());
-          if (!src.columns) src.columns = guessTrackConfig(track).columns;
+          if (!src.columns) src.columns = guessTrackConfig(track, src.kind).columns;
           this.tabs.set(src.id, { track });
         } else {
           const text = await Store.readText(`${this.folder}/${src.file}`);
