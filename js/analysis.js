@@ -110,20 +110,188 @@ function statsTable(cols) {
   return tb;
 }
 
+/* =================== Riepilogo di un tratto, in parole semplici =================== */
+const TURN_DPS = 3; // °/s: sopra questa velocità di rotazione conto una correzione di timone
+
+/* secondi da non contare: virate, strambate e grandi cambi di rotta (±6 s attorno alla rotazione forte) */
+function maneuverMask(ch, a, b) {
+  const step = 100, n = Math.floor((b - a) / step), mask = new Uint8Array(n);
+  const src = ch.yaw ? resample(ch.yaw, a, step, n) : null;
+  let rate = null;
+  if (src) rate = Array.from(src);
+  else if (ch.cog) { const c = resample(ch.cog, a, step, n); rate = new Array(n).fill(NaN); for (let k = 10; k < n; k++) if (isFinite(c[k]) && isFinite(c[k - 10])) rate[k] = angDiff(c[k], c[k - 10]); }
+  if (!rate) return mask;
+  for (let k = 0; k < n; k++) {
+    let s = 0, c = 0; for (let j = k - 3; j <= k + 3; j++) if (j >= 0 && j < n && isFinite(rate[j])) { s += rate[j]; c++; }
+    if (c && Math.abs(s / c) > 8) for (let j = Math.max(0, k - 60); j <= Math.min(n - 1, k + 60); j++) mask[j] = 1;
+  }
+  return mask;
+}
+/* oscillazione attorno all'andamento (media mobile di 20 s), senza i secondi delle manovre.
+   Restituisce l'ampiezza tipica (±) e quante oscillazioni al minuto. */
+function wobble(ch, a, b, circ = false, mask = null) {
+  if (!ch || b - a < 6000) return null;
+  const step = 100, n = Math.floor((b - a) / step), r = resample(ch, a, step, n), v = Array.from(r);
+  if (circ) { let prev = NaN, off = 0; for (let i = 0; i < n; i++) { if (!isFinite(v[i])) continue; v[i] += off; if (isFinite(prev)) { const d = v[i] - prev; if (d > 180) { v[i] -= 360; off -= 360; } else if (d < -180) { v[i] += 360; off += 360; } } prev = v[i]; } }
+  const use = i => isFinite(v[i]) && !(mask && mask[i]);
+  const ps = new Float64Array(n + 1), pc = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) { const ok = use(i); ps[i + 1] = ps[i] + (ok ? v[i] : 0); pc[i + 1] = pc[i] + (ok ? 1 : 0); }
+  const mean = (i, half) => { const lo = Math.max(0, i - half), hi = Math.min(n, i + half + 1), c = pc[hi] - pc[lo]; return c ? (ps[hi] - ps[lo]) / c : NaN; };
+  const thr = circ ? 0.5 : 0.3;
+  let ss = 0, ok = 0, side = 0, cross = 0, counted = 0;
+  for (let i = 0; i < n; i++) {
+    if (!use(i)) { side = 0; continue; }
+    const d = mean(i, 3) - mean(i, 100); // valore appena lisciato meno l'andamento di 20 s
+    if (!isFinite(d)) continue;
+    ss += d * d; ok++; counted++;
+    const sg = d > thr ? 1 : d < -thr ? -1 : 0;
+    if (sg && sg !== side) { if (side) cross++; side = sg; }
+  }
+  if (counted < 60) return null; // meno di 6 s utili
+  return { sd: Math.sqrt(ss / ok), perMin: cross / 2 / (counted * step / 60000) };
+}
+/* velocità e timone fuori dalle manovre */
+function steadyStats(ch, a, b, mask) {
+  const step = 100, n = mask.length, out = {};
+  if (ch.sog) {
+    const r = resample(ch.sog, a, step, n); let s = 0, s2 = 0, c = 0;
+    for (let i = 0; i < n; i++) if (!mask[i] && isFinite(r[i])) { s += r[i]; s2 += r[i] * r[i]; c++; }
+    if (c >= 60) { out.sogMean = s / c; out.sogSd = Math.sqrt(Math.max(0, s2 / c - out.sogMean * out.sogMean)); }
+  }
+  if (ch.yaw) {
+    const r = resample(ch.yaw, a, step, n); let side = 0, turns = 0, c = 0, peak = 0;
+    for (let k = 0; k < n; k++) {
+      if (mask[k]) { side = 0; continue; }
+      let s = 0, m = 0; for (let j = k - 2; j <= k + 2; j++) if (j >= 0 && j < n && isFinite(r[j])) { s += r[j]; m++; }
+      if (!m) continue; c++;
+      const v = s / m; peak = Math.max(peak, Math.abs(v));
+      const sd = v > TURN_DPS ? 1 : v < -TURN_DPS ? -1 : 0;
+      if (sd && sd !== side) { turns++; side = sd; }
+    }
+    if (c >= 60) { out.turns = turns / (c * step / 60000); out.peak = peak; }
+  }
+  out.free = mask.reduce((x, m) => x + (m ? 0 : 1), 0) * step;
+  return out;
+}
+/* da che parte sbanda: se ci sono virate i due lati si annullano nella media */
+function sideSplit(ch, a, b) {
+  if (!ch) return null;
+  const i0 = idxAt(ch.t, a), i1 = idxAt(ch.t, b);
+  let pos = 0, neg = 0, sp = 0, sn = 0, n = 0;
+  for (let i = i0; i < i1; i++) { const v = ch.v[i]; n++; if (v > 1) { pos++; sp += v; } else if (v < -1) { neg++; sn += v; } }
+  if (!n) return null;
+  return { both: pos / n > 0.2 && neg / n > 0.2, pos: pos ? sp / pos : NaN, neg: neg ? sn / neg : NaN };
+}
+/* conduzione: rotta e timone */
+function driveStats(ch, a, b) {
+  const x = {};
+  if (ch.cog && b - a >= 4000) {
+    const i0 = idxAt(ch.cog.t, a), i1 = idxAt(ch.cog.t, b);
+    let sx = 0, sy = 0, n = 0;
+    for (let i = i0; i < i1; i++) { const r = ch.cog.v[i] * Math.PI / 180; sx += Math.cos(r); sy += Math.sin(r); n++; }
+    if (n > 2) {
+      const R = Math.min(1, Math.hypot(sx, sy) / n), mean = Math.atan2(sy, sx) * 180 / Math.PI;
+      x.cogSd = Math.sqrt(-2 * Math.log(Math.max(R, 1e-9))) * 180 / Math.PI;
+      let lo = 0, hi = 0, rate = 0;
+      for (let i = i0; i < i1; i++) {
+        const d = angDiff(ch.cog.v[i], mean); lo = Math.min(lo, d); hi = Math.max(hi, d);
+        if (i > i0) { const dt = (ch.cog.t[i] - ch.cog.t[i - 1]) / 1000; if (dt > 0.3 && dt < 5) rate = Math.max(rate, Math.abs(angDiff(ch.cog.v[i], ch.cog.v[i - 1])) / dt); }
+      }
+      x.cogRange = hi - lo; x.cogRate = rate;
+    }
+  }
+  if (ch.yaw && b - a >= 4000) {
+    // correzioni: ogni volta che la rotazione supera ±TURN_DPS °/s in una direzione nuova
+    const n = Math.floor((b - a) / 100), r = resample(ch.yaw, a, 100, n);
+    let side = 0, turns = 0, ok = 0;
+    for (let k = 0; k < n; k++) {
+      let s = 0, c = 0; for (let j = k - 2; j <= k + 2; j++) if (j >= 0 && j < n && isFinite(r[j])) { s += r[j]; c++; }
+      if (!c) continue; ok++;
+      const v = s / c, sd = v > TURN_DPS ? 1 : v < -TURN_DPS ? -1 : 0;
+      if (sd && sd !== side) { turns++; side = sd; }
+    }
+    if (ok > n * 0.5) x.turns = turns / ((b - a) / 60000);
+  }
+  return x;
+}
+/* tutte le misure del riepilogo, per un intervallo */
+function segmentMeasures(S, a, b) {
+  const ch = pickChannels(S), r = boatStats(S, a, b, ch);
+  const mask = maneuverMask(ch, a, b);
+  return { r, ch, d: driveStats(ch, a, b), heelW: wobble(ch.heel, a, b, false, mask), pitchW: wobble(ch.pitch, a, b, false, mask), cogW: wobble(ch.cog, a, b, true, mask), heelSide: sideSplit(ch.heel, a, b), st: steadyStats(ch, a, b, mask) };
+}
+
+/* il riepilogo: riquadri divisi per tipo, un numero grande e una frase */
+function segmentSummary(S, a, b) {
+  const M = segmentMeasures(S, a, b), r = M.r;
+  const prevSeg = [...S.meta.events].filter(e => e.type === 'tratto' && e.t2 != null && e.t2 <= a + 1000 && e.t < a - 1000).pop();
+  const P = prevSeg && prevSeg.t2 - prevSeg.t >= 6000 ? segmentMeasures(S, prevSeg.t, prevSeg.t2) : null;
+  const prevName = prevSeg ? (prevSeg.note || 'tratto prima') : '';
+  const good = c => c == null || c >= 0.8;
+  const f = (v, d) => v != null && isFinite(v) ? fmtNum(v, d) : '—';
+  const times = v => { const k = Math.round(v); return !isFinite(v) ? '' : k === 1 ? '1 volta al minuto' : `${k} volte al minuto`; };
+  // confronto con il tratto prima: ▲/▼ e il valore di allora
+  const cmp = (now, then, d, unit, higherIsBetter) => {
+    if (!P || then == null || !isFinite(then) || now == null || !isFinite(now)) return null;
+    const diff = now - then, same = Math.abs(diff) < Math.pow(10, -d) * 5;
+    const better = higherIsBetter == null ? null : (diff > 0) === higherIsBetter;
+    return h('div', { class: 'sm-prev' + (same || better == null ? '' : better ? ' up' : ' down') },
+      same ? `come ${prevName}` : `${diff > 0 ? '▲' : '▼'} ${fmtNum(Math.abs(diff), d)} ${unit} rispetto a ${prevName} (${fmtNum(then, d)})`);
+  };
+  const tile = (label, big, unit, subs, prev, ok = true) => h('div', { class: 'sm-tile' + (ok ? '' : ' weak') },
+    h('div', { class: 'sm-label' }, label, ok ? null : h('span', { class: 'sm-badge' }, 'dati incompleti')),
+    h('div', { class: 'sm-val' }, h('span', { class: 'sm-big num' }, big), h('span', { class: 'sm-unit' }, unit)),
+    ...subs.filter(Boolean).map(t => h('div', { class: 'sm-sub' }, t)), prev);
+  const sec = (name, tiles) => { const t = tiles.filter(Boolean); return t.length ? h('div', { class: 'sm-sec' }, h('div', { class: 'sm-gh' }, name), h('div', { class: 'sm-tiles' }, t)) : null; };
+
+  // Velocità
+  const speed = r.sog ? [
+    tile('Velocità media', f(r.sog.mean, 1), 'kn', [`massima ${f(r.sog.max, 1)} kn`, M.st.sogMean != null && Math.abs(M.st.sogMean - r.sog.mean) >= 0.1 ? `senza le manovre: ${f(M.st.sogMean, 1)} kn` : null], cmp(r.sog.mean, P?.r.sog?.mean, 1, 'kn', true), good(r.sog.cov)),
+    M.st.sogSd != null ? tile('Costanza della velocità', '± ' + f(M.st.sogSd, 1), 'kn', ['quanto si allontana dalla media, manovre escluse', 'più è basso, più la barca va regolare'], cmp(M.st.sogSd, P?.st.sogSd, 1, 'kn', false), good(r.sog.cov)) : null,
+    tile('Distanza', r.sog.dist * 1852 >= 1000 ? f(r.sog.dist * 1.852, 2) : f(r.sog.dist * 1852, 0), r.sog.dist * 1852 >= 1000 ? 'km' : 'm', [`in ${fmtDur(b - a)}`], null, good(r.sog.cov))] : [];
+  // Stato barca
+  const heelTile = () => {
+    if (!r.heel) return null;
+    const sp = M.heelSide, w = M.heelW;
+    const big = sp && sp.both ? f((Math.abs(sp.pos) + Math.abs(sp.neg)) / 2, 1) : f(Math.abs(r.heel.mean), 1);
+    const side = sp && sp.both ? `a dritta ${f(sp.pos, 1)}° · a sinistra ${f(Math.abs(sp.neg), 1)}° (con virate)` : Math.abs(r.heel.mean) < 0.5 ? 'barca piatta' : r.heel.mean > 0 ? 'sbandata a dritta' : 'sbandata a sinistra';
+    return tile('Sbandamento medio', big, '°', [side, w && `oscilla di ± ${f(w.sd, 1)}°, ${times(w.perMin)}`], cmp(w?.sd, P?.heelW?.sd, 1, '° di oscillazione', false), good(r.heel.cov));
+  };
+  const pitchTile = () => {
+    if (!r.pitch) return null;
+    const w = M.pitchW;
+    return tile('Trim medio', f(r.pitch.mean, 1), '°', [Math.abs(r.pitch.mean) < 0.3 ? 'in piano' : r.pitch.mean > 0 ? 'prua su' : 'prua giù', w && `oscilla di ± ${f(w.sd, 1)}°, ${times(w.perMin)}`], cmp(w?.sd, P?.pitchW?.sd, 1, '° di oscillazione', false), good(r.pitch.cov));
+  };
+  // Conduzione
+  const cogTile = M.cogW ? tile('Rotta: quanto oscilla', '± ' + f(M.cogW.sd, 1), '°', ['piccole correzioni attorno alla rotta, manovre escluse', times(M.cogW.perMin)], cmp(M.cogW.sd, P?.cogW?.sd, 1, '°', false), good(r.sog?.cov)) : null;
+  const steerTile = M.st.turns != null ? tile('Timone: correzioni', f(M.st.turns, 0), 'al minuto', [`la più forte: ${f(M.st.peak, 0)} °/s`, 'rotazioni della barca oltre ' + TURN_DPS + ' °/s, manovre escluse'], cmp(M.st.turns, P?.st.turns, 0, 'al minuto', false), good(r.steer?.cov)) : null;
+  const crew = r.hr ? [tile('Battito medio', f(r.hr.mean, 0), 'bpm', [`massimo ${f(r.hr.max, 0)} bpm`], cmp(r.hr.mean, P?.r.hr?.mean, 0, 'bpm', null), good(r.hr.cov))] : [];
+
+  const help = h('details', { class: 'sm-more' }, h('summary', null, 'Come leggere questi numeri'),
+    h('ul', null,
+      h('li', null, 'Oscilla di ± = di quanto, in media, il valore va su e giù attorno al suo andamento. Non contano i cambi lenti né i secondi attorno a virate e strambate.'),
+      h('li', null, 'Volte al minuto = quante oscillazioni complete ci sono in un minuto.'),
+      h('li', null, 'Il timone non ha un sensore: si contano le rotazioni della barca oltre ' + TURN_DPS + ' °/s, cioè le correzioni di rotta vere. "La più forte" è la rotazione più veloce fuori dalle manovre.'),
+      h('li', null, 'Manovre = i secondi attorno a virate, strambate e grandi cambi di rotta, riconosciuti dalla rotazione della barca.'),
+      h('li', null, 'Verde = meglio del tratto prima, rosso = peggio (velocità più alta è meglio; oscillazioni e correzioni più basse sono meglio).'),
+      h('li', null, '"Dati incompleti": in quel tratto è arrivato meno dell\'80% dei dati, il numero non è affidabile.')));
+  const all = h('details', { class: 'sm-more' }, h('summary', null, 'Tutti i numeri'), statsTable(P ? [{ label: 'Questo tratto', r }, { label: prevName, r: P.r }] : [{ label: 'Tratto', r }]));
+  return h('div', { class: 'sm' },
+    h('div', { class: 'sm-head' }, h('b', { class: 'num' }, `${fmtClock(a)} – ${fmtClock(b)}`), h('span', { class: 'muted' }, fmtDur(b - a)), M.st.free < (b - a) * 0.9 ? h('span', { class: 'faint' }, `manovre escluse: ${fmtDur(b - a - M.st.free)}`) : null, P ? h('span', { class: 'faint' }, `confronto con ${prevName}`) : null),
+    sec('Velocità', speed.filter(Boolean)), sec('Stato barca', [heelTile(), pitchTile()]), sec('Conduzione', [cogTile, steerTile]), sec('Equipaggio', crew),
+    r.loads.length ? h('div', { class: 'stat' }, r.loads.map(l => `${l.name}: media ${fmtNum(l.mean, 0)} ${l.unit}, max ${fmtNum(l.max, 0)} ${l.unit}`).join(' · ')) : null,
+    help, all);
+}
+
 /* Riepilogo di un tratto: finestra con le misure, esporta, salva come tratto */
 function showRangeAnalysis(V, a, b, title) {
   const S = V.S;
   if (b - a < 2000) return;
-  const r = boatStats(S, a, b);
-  const body = h('div', { style: { display: 'grid', gap: '12px' } },
-    h('div', { class: 'row' }, h('b', { class: 'num' }, `${fmtClock(a)} – ${fmtClock(b)}`), h('span', { class: 'muted' }, fmtDur(b - a))),
-    statsTable([{ label: 'Tratto', r }]),
-    r.loads.length ? h('div', { class: 'stat' }, r.loads.map(l => `${l.name}: media ${fmtNum(l.mean, 0)} ${l.unit}, max ${fmtNum(l.max, 0)} ${l.unit}`).join(' · ')) : null,
-    h('p', { class: 'stat' }, STAT_HELP));
-  modal({ title: title || 'Analisi del tratto', body, wide: true, actions: [
+  const saved = S.meta.events.some(e => e.type === 'tratto' && Math.abs(e.t - a) < 1500 && e.t2 != null && Math.abs(e.t2 - b) < 1500);
+  modal({ title: title || 'Riepilogo del tratto', body: segmentSummary(S, a, b), wide: true, actions: [
     { label: 'Esporta i dati (CSV)', run: () => { V.inT = a; V.outT = b; V.exportRange(); return false; } },
-    { label: 'Salva come tratto', run: () => { addSegment(V, a, b); } },
-    { label: 'Chiudi', kind: 'primary' }] });
+    saved ? null : { label: 'Salva come tratto', run: () => { addSegment(V, a, b); } },
+    { label: 'Chiudi', kind: 'primary' }].filter(Boolean) });
 }
 /* Un tratto è un evento con inizio e fine */
 function addSegment(V, a, b, note = '') {

@@ -313,3 +313,24 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
   .qd-row.three > :first-child { grid-column: auto; }
   .qd-seg { min-width: 0; }
 }
+
+/* ---------- Riepilogo del tratto ---------- */
+.sm { display: grid; gap: 14px; }
+.sm-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 15px; }
+.sm-sec { display: grid; gap: 6px; }
+.sm-gh { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.sm-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.sm-tile { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); }
+.sm-tile.weak .sm-big { color: var(--faint); }
+.sm-label { font-size: 13px; font-weight: 650; color: var(--muted); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.sm-badge { font-size: 11px; font-weight: 700; color: var(--warn); background: rgba(201,133,0,.14); padding: 1px 6px; border-radius: 999px; }
+.sm-val { display: flex; align-items: baseline; gap: 6px; }
+.sm-big { font-size: 38px; font-weight: 700; line-height: 1.05; letter-spacing: -.02em; }
+.sm-unit { font-size: 15px; font-weight: 600; color: var(--muted); }
+.sm-sub { font-size: 13px; color: var(--muted); line-height: 1.35; }
+.sm-prev { margin-top: 4px; font-size: 12px; font-weight: 650; color: var(--muted); }
+.sm-prev.up { color: var(--good); }
+.sm-prev.down { color: var(--bad); }
+.sm-more { font-size: 13px; color: var(--muted); }
+.sm-more summary { cursor: pointer; font-weight: 650; color: var(--fg); padding: 4px 0; }
+.sm-more ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }

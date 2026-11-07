@@ -5,7 +5,6 @@
    Si ricalcola una volta al secondo: valori stabili e leggibili. */
 'use strict';
 
-const QD_TURN = 3; // °/s: sopra questa velocità di rotazione conto una correzione di timone
 
 const Quadro = {
   S: null,
@@ -60,7 +59,7 @@ const Quadro = {
       h('div', { class: 'qd-group' }, h('div', { class: 'qd-gh' }, 'Stato barca'), h('div', { class: 'qd-row two' }, this.tiles.heel.el, this.tiles.pitch.el)),
       h('div', { class: 'qd-group' }, h('div', { class: 'qd-gh' }, 'Conduzione'), h('div', { class: 'qd-row three' }, this.tiles.sog.el, this.tiles.cog.el, this.tiles.steer.el)));
     root.append(h('div', { class: 'qd' }, this.top, this.banner, this.wrap,
-      h('div', { class: 'qd-foot' }, 'Valori in grigio: in quella finestra è arrivato meno dell\'80% dei dati, non sono affidabili. Il timone non ha un sensore: si misura dalla rotazione della barca (giroscopio del telefono). Correzioni = rotazioni oltre ' + QD_TURN + ' °/s.')));
+      h('div', { class: 'qd-foot' }, 'Valori in grigio: in quella finestra è arrivato meno dell\'80% dei dati, non sono affidabili. Il timone non ha un sensore: si misura dalla rotazione della barca (giroscopio del telefono). Correzioni = rotazioni oltre ' + TURN_DPS + ' °/s.')));
     this.renderTop();
   },
 
@@ -127,38 +126,7 @@ const Quadro = {
       W, rows: [['Attività', r => r.steer && r.steer.activity, 1, '°/s'], ['Correzione più forte', r => r.steer && r.steer.violence, 0, '°/s'], ['Correzioni', w => w.x.turns, 0, '/min']], mixed: [false, false, true], covOf: w => w.r.steer && w.r.steer.cov });
   },
 
-  /* misure in più per la conduzione */
-  extra(ch, a, b) {
-    const x = {};
-    if (ch.cog && b - a >= 4000) {
-      const i0 = idxAt(ch.cog.t, a), i1 = idxAt(ch.cog.t, b);
-      let sx = 0, sy = 0, n = 0;
-      for (let i = i0; i < i1; i++) { const r = ch.cog.v[i] * Math.PI / 180; sx += Math.cos(r); sy += Math.sin(r); n++; }
-      if (n > 2) {
-        const R = Math.min(1, Math.hypot(sx, sy) / n), mean = Math.atan2(sy, sx) * 180 / Math.PI;
-        x.cogSd = Math.sqrt(-2 * Math.log(Math.max(R, 1e-9))) * 180 / Math.PI;
-        let lo = 0, hi = 0, rate = 0;
-        for (let i = i0; i < i1; i++) {
-          const d = angDiff(ch.cog.v[i], mean); lo = Math.min(lo, d); hi = Math.max(hi, d);
-          if (i > i0) { const dt = (ch.cog.t[i] - ch.cog.t[i - 1]) / 1000; if (dt > 0.3 && dt < 5) rate = Math.max(rate, Math.abs(angDiff(ch.cog.v[i], ch.cog.v[i - 1])) / dt); }
-        }
-        x.cogRange = hi - lo; x.cogRate = rate;
-      }
-    }
-    if (ch.yaw && b - a >= 4000) {
-      // correzioni: ogni volta che la rotazione supera ±QD_TURN °/s in una direzione nuova
-      const n = Math.floor((b - a) / 100), r = resample(ch.yaw, a, 100, n);
-      let side = 0, turns = 0, ok = 0;
-      for (let k = 0; k < n; k++) {
-        let s = 0, c = 0; for (let j = k - 2; j <= k + 2; j++) if (j >= 0 && j < n && isFinite(r[j])) { s += r[j]; c++; }
-        if (!c) continue; ok++;
-        const v = s / c, sd = v > QD_TURN ? 1 : v < -QD_TURN ? -1 : 0;
-        if (sd && sd !== side) { turns++; side = sd; }
-      }
-      if (ok > n * 0.5) x.turns = turns / ((b - a) / 60000);
-    }
-    return x;
-  },
+  extra(ch, a, b) { return driveStats(ch, a, b); },
 
   /* un riquadro: numero grande, andamento dell'ultimo minuto, tabella 10 s / 30 s / tratto */
   fill(T, o) {
@@ -226,10 +194,7 @@ const Quadro = {
   summary(seg) {
     const S = this.S;
     if (!S || seg.t2 == null || seg.t2 - seg.t < 2000) return;
-    const r = boatStats(S, seg.t, seg.t2);
-    modal({ title: `${seg.note || 'Tratto'} · riepilogo`, wide: true, body: h('div', { style: { display: 'grid', gap: '12px' } },
-      h('div', { class: 'row' }, h('b', { class: 'num' }, `${fmtClock(seg.t)} – ${fmtClock(seg.t2)}`), h('span', { class: 'muted' }, fmtDur(seg.t2 - seg.t))),
-      statsTable([{ label: 'Tratto', r }]), h('p', { class: 'stat' }, STAT_HELP)), actions: [{ label: 'Chiudi', kind: 'primary' }] });
+    modal({ title: `${seg.note || 'Tratto'} · riepilogo`, wide: true, body: segmentSummary(S, seg.t, seg.t2), actions: [{ label: 'Chiudi', kind: 'primary' }] });
   }
 };
 
