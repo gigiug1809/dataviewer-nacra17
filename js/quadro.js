@@ -94,8 +94,8 @@ const Quadro = {
     this.renderTop();
     const st = Live.statusInfo(S);
     const stale = !S.hasData() || !st.fresh;
-    this.banner.hidden = !stale;
-    this.banner.textContent = !S.hasData() ? st.wait : `Dati fermi: ${st.txt}. I valori qui sotto sono gli ultimi arrivati.`;
+    this.banner.hidden = !stale && !st.skew;
+    this.banner.textContent = st.skew || (!S.hasData() ? st.wait : `Dati fermi: ${st.txt}. I valori qui sotto sono gli ultimi arrivati.`);
     this.wrap.classList.toggle('stale', stale && S.hasData());
     if (!S.hasData()) return;
     const t = S.t1, ch = pickChannels(S);

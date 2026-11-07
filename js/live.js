@@ -44,12 +44,12 @@ class LiveSession extends Session {
       if (c.t.length && t < c.t[c.t.length - 1]) this.sorted = false;
       c.t.push(t); c.v.push(v);
     };
-    for (const r of m.m || []) { const t = m.b + r[0]; LIVE_M.forEach((k, i) => add(k, t, r[i + 1])); this.lastSampleT = Math.max(this.lastSampleT, t); }
+    for (const r of m.m || []) { const t = m.b + r[0]; LIVE_M.forEach((k, i) => add(k, t, r[i + 1])); this.lastSampleT = Math.max(this.lastSampleT, t); this.lastMT = t; this.lastMRx = Date.now(); }
     for (const k of m.e || []) { // [tipo, dt]: "s" inizio tratto, "f" fine tratto
       const t = m.b + k[1];
       if (k[0] === 's') Live.segmentStart(this, t, 'telefono'); else if (k[0] === 'f') Live.segmentStop(this, t, 'telefono');
     }
-    for (const r of m.g || []) { const t = m.b + r[0]; LIVE_G.forEach((k, i) => add(k, t, r[i + 1])); this.lastSampleT = Math.max(this.lastSampleT, t); }
+    for (const r of m.g || []) { const t = m.b + r[0]; LIVE_G.forEach((k, i) => add(k, t, r[i + 1])); this.lastSampleT = Math.max(this.lastSampleT, t); this.lastGT = t; this.lastGRx = Date.now(); }
     this.lastSampleRx = Date.now();
     this.dirty = true;
   }
@@ -174,7 +174,13 @@ const Live = {
     const wait = S.conn === 'error' ? 'Errore di collegamento al server: ' + (S.connDetail || '') : S.conn !== 'connected' ? 'Mi collego al server…'
       : st.online === false ? 'Il telefono è offline. Aspetto che si ricolleghi…' : st.rec ? 'Telefono in registrazione: arrivano i dati…'
       : S.status ? 'Telefono collegato ma non registra: avvia la registrazione.' : 'Collegato. Aspetto i dati del telefono: avvia la registrazione con "Trasmetti live" acceso.';
-    return { ok, fresh, txt, wait, bat: st.bat != null ? Math.round(st.bat * 100) : null };
+    // assetto e GPS con ore molto diverse: l'app del telefono ha l'orologio dei sensori sfasato
+    let skew = null;
+    if (S.lastMRx && S.lastGRx && Date.now() - S.lastMRx < 10000 && Date.now() - S.lastGRx < 30000) {
+      const d = (S.lastGT - S.lastMT) - (S.lastGRx - S.lastMRx);
+      if (Math.abs(d) > 30000) skew = `Sbandamento e trim arrivano con l'ora sbagliata (${fmtDur(Math.abs(d))} ${d > 0 ? 'indietro' : 'avanti'} rispetto al GPS): aggiorna l'app del telefono e riavvia la registrazione.`;
+    }
+    return { ok: ok && !skew, fresh, txt, wait, skew, bat: st.bat != null ? Math.round(st.bat * 100) : null };
   },
   renderBar(S) {
     const el = $('#liveBar');
@@ -184,6 +190,7 @@ const Live = {
     el.append(...[
       h('span', { class: 'chip', style: { background: info.ok ? 'rgba(25,158,112,.18)' : 'rgba(201,133,0,.18)' } }, h('span', { class: 'dot', style: { background: info.ok ? 'var(--good)' : 'var(--warn)' } }), `LIVE ${S.code} · ${info.txt}`),
       info.bat != null ? h('span', { class: 'small muted' }, `batteria ${info.bat}%`) : null,
+      info.skew ? h('span', { class: 'small', style: { color: 'var(--warn)', fontWeight: 700 }, title: info.skew }, '⚠ ora dei sensori sfasata') : null,
       h('button', { class: 'btn sm', title: 'Vista per il tablet: numeri grandi divisi per tipo', onclick: () => { LS.set('liveView', 'quadro'); Router.go('#/live/' + encodeURIComponent(S.code) + '/quadro'); } }, 'Quadro tablet'),
       S.follow ? null : h('button', { class: 'btn sm primary', onclick: () => { S.follow = true; Viewer.requestDraw(); this.renderBar(S); } }, 'Torna al live'),
       (() => {
