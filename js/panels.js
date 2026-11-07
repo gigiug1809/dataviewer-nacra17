@@ -1,6 +1,7 @@
 /* Pannelli del viewer. Ogni pannello: { el (corpo), update(t, playing), resize(), destroy(), settings() } */
 'use strict';
 const ICONS = {
+  grip: '<svg viewBox="0 0 12 16" fill="currentColor"><circle cx="3.5" cy="3" r="1.4"/><circle cx="8.5" cy="3" r="1.4"/><circle cx="3.5" cy="8" r="1.4"/><circle cx="8.5" cy="8" r="1.4"/><circle cx="3.5" cy="13" r="1.4"/><circle cx="8.5" cy="13" r="1.4"/></svg>',
   gear: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/></svg>',
   close: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 5l10 10M15 5L5 15"/></svg>',
   sync: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="11" r="6.5"/><path d="M10 7.5V11l2.5 1.5M8 2.5h4"/></svg>',
@@ -598,6 +599,7 @@ class NumbersPanel {
     this.V = V; this.cfg = cfg; this.S = V.S;
     cfg.ids = (cfg.ids || []).filter(id => this.S.live || this.S.byId.has(id));
     if (cfg.avg == null) cfg.avg = 10;
+    if (cfg.damp == null) cfg.damp = 2; // secondi di smorzamento del numero grande (0 = istantaneo)
     this.el = h('div', { class: 'num-grid' });
     this.build();
   }
@@ -631,9 +633,13 @@ class NumbersPanel {
   }
   update(t) {
     if (this.el.clientWidth !== this._w || this.el.clientHeight !== this._h) { this._w = this.el.clientWidth; this._h = this.el.clientHeight; this.resize(); }
+    // numeri leggibili: al massimo 4 aggiornamenti al secondo, salvo i salti di tempo (clic sul grafico, video)
+    const now = performance.now();
+    if (this._lt != null && Math.abs(t - this._lt) < 2000 && now - (this._lw || 0) < 250) return;
+    this._lt = t; this._lw = now;
     const w = this.cfg.avg * 1000;
     for (const it of this.tiles || []) {
-      const c = it.c, v = interp(c, t);
+      const c = it.c, v = dampedValue(c, t, this.cfg.damp);
       const s = c.circular ? dirLabel(v) : fmtVal(c, v);
       if (s === it.last) continue;
       it.last = s;
@@ -647,9 +653,10 @@ class NumbersPanel {
   settings() {
     const pick = channelPicker(this.S, this.cfg.ids);
     const avg = h('input', { type: 'number', min: 1, max: 600, value: this.cfg.avg });
+    const damp = h('select', null, DAMP_CHOICES.map(d => h('option', { value: d, selected: d === this.cfg.damp }, d ? `media degli ultimi ${d} s` : 'valore istantaneo')));
     const title = h('input', { type: 'text', class: 'full', value: this.cfg.title || '', placeholder: 'Numeri' });
-    return { el: h('div', { style: { display: 'grid', gap: '12px' } }, h('label', { class: 'f' }, 'Titolo', title), h('label', { class: 'f' }, 'Media sugli ultimi (secondi)', avg), h('div', { class: 'f' }, 'Grandezze', pick.el)),
-      apply: () => { this.cfg.ids = pick.get(); this.cfg.avg = Math.max(1, Number(avg.value) || 10); this.cfg.title = title.value.trim(); this.build(); } };
+    return { el: h('div', { style: { display: 'grid', gap: '12px' } }, h('label', { class: 'f' }, 'Titolo', title), h('label', { class: 'f' }, 'Numero grande (più alto = più calmo)', damp), h('label', { class: 'f' }, 'Media e massimo sotto, sugli ultimi (secondi)', avg), h('div', { class: 'f' }, 'Grandezze', pick.el)),
+      apply: () => { this.cfg.ids = pick.get(); this.cfg.avg = Math.max(1, Number(avg.value) || 10); this.cfg.damp = Number(damp.value); this.cfg.title = title.value.trim(); this.build(); } };
   }
   destroy() {}
 }

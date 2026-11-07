@@ -103,7 +103,7 @@ const Viewer = {
     this.gridEl = h('div', { class: 'grid-stack' + (this.locked ? ' locked' : '') });
     this.gridWrap.append(this.gridEl);
     root.append(top, this.gridWrap, this.buildTimeline());
-    this.grid = GridStack.init({ column: COLS, cellHeight: this.cellH(), margin: 0, float: true, handle: '.pnl-head', animate: false, staticGrid: this.locked, resizable: { handles: 'e,se,s,sw,w' }, disableOneColumnMode: true, columnOpts: { breakpoints: [] } }, this.gridEl);
+    this.grid = GridStack.init({ column: COLS, cellHeight: this.cellH(), margin: 0, float: true, handle: '.pnl-grip', animate: false, staticGrid: this.locked, resizable: { handles: 'se' }, disableOneColumnMode: true, columnOpts: { breakpoints: [] } }, this.gridEl);
     this.panels = new Map();
     const layout = (m.layout && m.layout.length ? m.layout : defaultLayout(S));
     for (const p of layout) this.addPanel(p, false);
@@ -146,7 +146,7 @@ const Viewer = {
     if (nums && top.length) { nums.cfg.ids = [...new Set([...(nums.cfg.ids || []), ...top.map(c => c.id)])]; nums.inst.cfg = nums.cfg; nums.inst.build(); }
     this.layoutChanged();
     if (last) setTimeout(() => last.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
-    toast('Aggiunti: un grafico per ogni file nuovo' + (nums && top.length ? ' e le grandezze principali nel pannello Numeri' : '') + '. Spostali dove vuoi trascinando la barra del titolo.', 7000);
+    toast('Aggiunti: un grafico per ogni file nuovo' + (nums && top.length ? ' e le grandezze principali nel pannello Numeri' : '') + '. Spostali dove vuoi trascinando la maniglia ⠿ in alto a sinistra.', 7000);
   },
   cellH() { const r = this.gridWrap ? this.gridWrap.clientHeight : window.innerHeight - 150; return Math.max(16, Math.floor((r - 8) / ROWS)); },
   fitGrid() { if (!this.grid) return; this.grid.cellHeight(this.cellH()); this.drawTimeline(); },
@@ -154,18 +154,25 @@ const Viewer = {
   addPanel(p, save = true) {
     const id = p.id || uid('p');
     const cfg = p.cfg || {};
-    const el = this.grid.addWidget({ x: p.x, y: p.y, w: p.w || 6, h: p.h || 8, id, autoPosition: p.x == null });
-    const content = el.querySelector('.grid-stack-item-content');
     const Cls = PANEL_CLASSES[p.type];
     if (!Cls) return;
+    // costruisco il pannello completo (con la maniglia) PRIMA di darlo a GridStack: GridStack cerca il punto
+    // di presa solo quando registra il pannello, e se non lo trova rende trascinabile tutto il pannello
+    const el = h('div', { class: 'grid-stack-item' }, h('div', { class: 'grid-stack-item-content' }));
+    const content = el.firstChild;
     const inst = new Cls(this, cfg);
     const ttl = h('div', { class: 'ttl' }, inst.title());
-    const head = h('div', { class: 'pnl-head' }, ttl, ...(inst.headButtons ? inst.headButtons() : []),
+    // si sposta solo dalla maniglia in alto a sinistra, si ridimensiona solo dall'angolo in basso a destra:
+    // così trascinare dentro un pannello (Maiusc + trascina sui grafici, la mappa) non lo muove mai
+    const grip = h('span', { class: 'pnl-grip', title: 'Trascina da qui per spostare il pannello', 'aria-label': 'Sposta il pannello', html: ICONS.grip });
+    const head = h('div', { class: 'pnl-head' }, grip, ttl, ...(inst.headButtons ? inst.headButtons() : []),
       h('button', { class: 'icon-btn', title: 'Impostazioni del pannello', 'aria-label': 'Impostazioni', html: ICONS.gear, onclick: () => this.panelSettings(inst) }),
       h('button', { class: 'icon-btn', title: 'Chiudi il pannello', 'aria-label': 'Chiudi', html: ICONS.close, onclick: () => this.removePanel(id) }));
     head.querySelectorAll('button,select').forEach(b => b.addEventListener('mousedown', e => e.stopPropagation()));
     const body = h('div', { class: 'pnl-body' }, inst.el);
     content.append(head, body);
+    this.gridEl.append(el);
+    this.grid.makeWidget(el, { x: p.x, y: p.y, w: p.w || 6, h: p.h || 8, id, autoPosition: p.x == null });
     const rec = { id, type: p.type, cfg, inst, el, ttl, body };
     rec.ro = new ResizeObserver(debounce(() => { inst.resize(); this.requestDraw(); }, 60));
     rec.ro.observe(body);
@@ -556,7 +563,7 @@ const Viewer = {
     const rows = [['Spazio', 'Play / pausa'], ['← →', 'Indietro / avanti 1 s'], ['Maiusc + ← →', '10 s'], ['Alt + ← →  oppure  , .', 'Un fotogramma'], ['↑ ↓', 'Velocità di riproduzione'], ['[ ]', 'Evento precedente / successivo'], ['I  O  X', 'Inizio, fine, togli selezione'],
       ...EVENT_TYPES.filter(e => e.key).map(e => [e.key.toUpperCase(), `Segna: ${e.label}${e.id === 'nota' ? ' (con testo)' : ''}`]), ['⌘ Z', 'Annulla l\'ultimo evento segnato'], ['Maiusc + trascina', 'Su un grafico: seleziona un tratto e lo analizza'], ['Tasto destro', 'Sulla dashboard: aggiungi o modifica i pannelli']];
     modal({ title: 'Scorciatoie da tastiera', body: h('div', null, h('div', { class: 'help-grid' }, rows.flatMap(([a, b]) => [h('span', null, ...a.split('  ').map((x, i) => [i ? ' · ' : '', h('span', { class: 'kbd' }, x)])), h('span', null, b)])),
-      h('p', { style: { marginTop: '14px' } }, 'Sui grafici: clic per andare a quell\'ora, trascina per scorrere, rotella per allargare o stringere la finestra. Sulla mappa: clic sulla traccia per andare a quel punto. I pannelli si spostano trascinandone la barra del titolo e si ridimensionano dai bordi.')) });
+      h('p', { style: { marginTop: '14px' } }, 'Sui grafici: clic per andare a quell\'ora, trascina per scorrere, rotella per allargare o stringere la finestra. Sulla mappa: clic sulla traccia per andare a quel punto. I pannelli si spostano solo dalla maniglia ⠿ in alto a sinistra e si ridimensionano dall\'angolo in basso a destra.')) });
   },
   infoBox() {
     const m = this.S.meta;

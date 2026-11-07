@@ -250,7 +250,7 @@ const Live = {
 function liveLayout(S) {
   const has = k => ['live:' + k]; // canali attesi: i pannelli si riempiono appena arrivano
   return [
-    { type: 'numbers', x: 0, y: 0, w: 5, h: 13, cfg: { ids: [...has('gps_speed_kn'), ...has('heel_deg'), ...has('pitch_deg'), ...has('gps_course'), ...has('yaw_rate_dps')], avg: 10 } },
+    { type: 'numbers', x: 0, y: 0, w: 5, h: 13, cfg: { ids: [...has('gps_speed_kn'), ...has('heel_deg'), ...has('pitch_deg'), ...has('gps_course'), ...has('yaw_rate_dps')], avg: 10, damp: 3 } },
     { type: 'averages', x: 5, y: 0, w: 8, h: 13, cfg: { windows: [10, 30] } },
     { type: 'map', x: 13, y: 0, w: 11, h: 13, cfg: { follow: true, trail: 120 } },
     { type: 'chart', x: 0, y: 13, w: 8, h: 11, cfg: { title: 'Velocità', ids: has('gps_speed_kn') } },

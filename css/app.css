@@ -152,8 +152,14 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
 .grid-stack-item-content { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden !important; inset: 2px !important; }
 .grid-stack-placeholder > .placeholder-content { background: var(--accent-soft) !important; border: 1.5px dashed var(--accent); border-radius: 8px; inset: 2px !important; }
 .locked .ui-resizable-handle { display: none !important; }
-.pnl-head { display: flex; align-items: center; gap: 4px; padding: 2px 4px 2px 9px; min-height: 28px; border-bottom: 1px solid var(--line); background: var(--surface-2); cursor: grab; user-select: none; flex: none; }
-.locked .pnl-head { cursor: default; }
+.pnl-head { display: flex; align-items: center; gap: 4px; padding: 2px 4px 2px 2px; min-height: 28px; border-bottom: 1px solid var(--line); background: var(--surface-2); user-select: none; flex: none; }
+.pnl-grip { display: inline-grid; place-items: center; width: 22px; height: 24px; border-radius: 6px; color: var(--faint); cursor: grab; flex: none; touch-action: none; }
+.pnl-grip:hover { background: var(--surface-3); color: var(--fg); }
+.pnl-grip:active { cursor: grabbing; }
+.pnl-grip svg { width: 10px; height: 14px; }
+.locked .pnl-grip { visibility: hidden; width: 6px; }
+.grid-stack-item > .ui-resizable-se { width: 16px; height: 16px; right: 0; bottom: 0; background: linear-gradient(135deg, transparent 50%, var(--line-2) 50%, var(--line-2) 58%, transparent 58%, transparent 70%, var(--line-2) 70%, var(--line-2) 78%, transparent 78%); border-bottom-right-radius: 10px; cursor: se-resize; opacity: .7; transform: none; z-index: 5; }
+.grid-stack-item > .ui-resizable-se:hover { opacity: 1; }
 .pnl-head .ttl { font-size: 12px; font-weight: 650; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
 .pnl-head .icon-btn { width: 24px; height: 24px; font-size: 13px; }
 .pnl-head .icon-btn svg { width: 14px; height: 14px; }
@@ -313,6 +319,9 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
   .qd-row.three > :first-child { grid-column: auto; }
   .qd-seg { min-width: 0; }
 }
+
+.qd-damp { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 650; color: var(--muted); }
+.qd-damp select { min-height: 44px; font-size: 15px; }
 
 /* ---------- Riepilogo del tratto ---------- */
 .sm { display: grid; gap: 14px; }

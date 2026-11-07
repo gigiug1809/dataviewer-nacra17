@@ -113,6 +113,21 @@ function statsTable(cols) {
 /* =================== Riepilogo di un tratto, in parole semplici =================== */
 const TURN_DPS = 3; // °/s: sopra questa velocità di rotazione conto una correzione di timone
 
+/* valore smorzato: media degli ultimi `sec` secondi (media circolare per gli angoli); 0 = valore istantaneo */
+function dampedValue(ch, t, sec, circular = ch && ch.circular) {
+  if (!ch) return NaN;
+  if (!(sec > 0)) return interp(ch, t);
+  const i0 = idxAt(ch.t, t - sec * 1000), i1 = idxAt(ch.t, t + 1);
+  if (i1 - i0 < 1) return interp(ch, t);
+  if (circular) {
+    let x = 0, y = 0; for (let i = i0; i < i1; i++) { const r = ch.v[i] * Math.PI / 180; if (isFinite(r)) { x += Math.cos(r); y += Math.sin(r); } }
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+  let s = 0, n = 0; for (let i = i0; i < i1; i++) { const v = ch.v[i]; if (isFinite(v)) { s += v; n++; } }
+  return n ? s / n : interp(ch, t);
+}
+const DAMP_CHOICES = [0, 1, 3, 5, 10];
+
 /* secondi da non contare: virate, strambate e grandi cambi di rotta (±6 s attorno alla rotazione forte) */
 function maneuverMask(ch, a, b) {
   const step = 100, n = Math.floor((b - a) / step), mask = new Uint8Array(n);

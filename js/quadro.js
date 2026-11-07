@@ -19,6 +19,7 @@ const Quadro = {
     LS.set('liveView', 'quadro');
     S.connect();
     S.onStatus = () => this.renderTop();
+    this.damp = LS.get('quadroDamp', 3);
     this.build(root);
     this.tick();
     this.timer = setInterval(() => this.tick(), 1000);
@@ -67,6 +68,7 @@ const Quadro = {
   renderTop() {
     const S = this.S;
     if (!S || !this.top) return;
+    if (this.top.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') return; // menu aperto: non lo chiudo
     const st = Live.statusInfo(S);
     const open = S.meta.events.find(e => e.type === 'tratto' && e.t2 == null);
     const last = [...S.meta.events].reverse().find(e => e.type === 'tratto' && e.t2 != null);
@@ -80,6 +82,9 @@ const Quadro = {
       open
         ? h('button', { class: 'btn qd-seg stop', onclick: () => Live.segmentStop(S) }, `■ Fine tratto · ${fmtDur(S.t1 - open.t)}`)
         : h('button', { class: 'btn qd-seg', onclick: () => Live.segmentStart(S) }, '▶ Inizia tratto'),
+      h('label', { class: 'qd-damp', title: 'I numeri grandi sono la media degli ultimi secondi: più alto = più calmi e leggibili' }, 'Numeri',
+        h('select', { onchange: e => { this.damp = Number(e.target.value); LS.set('quadroDamp', this.damp); this.tick(); } },
+          DAMP_CHOICES.map(d => h('option', { value: d, selected: d === this.damp }, d ? `media ${d} s` : 'istantanei')))),
       h('button', { class: 'btn', title: 'Salva i dati ricevuti (o scarica il CSV)', onclick: () => Live.saveAs(S) }, 'Salva'),
       h('button', { class: 'btn', title: 'Chiaro / scuro', onclick: () => { toggleTheme(); this.renderTop(); } }, theme() === 'dark' ? 'Chiaro' : 'Scuro'),
       h('button', { class: 'btn', title: 'Dashboard completa con mappa e grafici', onclick: () => { LS.set('liveView', 'dashboard'); Router.go('#/live/' + encodeURIComponent(S.code)); } }, 'Dashboard completa')].filter(Boolean));
@@ -102,22 +107,22 @@ const Quadro = {
     const wins = [['10 s', t - 10000], ['30 s', t - 30000]];
     if (open && t - open.t > 2000) wins.push(['Tratto', open.t]);
     const W = wins.map(([label, a]) => ({ label, a, r: boatStats(S, a, t, ch), x: this.extra(ch, a, t) }));
-    const now = (c, ms = 2000) => c ? stats(c, t - ms, t).mean : NaN;
+    const D = this.damp ?? 3, now = c => dampedValue(c, t, D, false);
     const cov = (c, a) => coverageOf(c, a, t) >= 0.8;
 
     // Stato barca
     for (const k of ['heel', 'pitch']) {
       const c = ch[k];
-      this.fill(this.tiles[k], { value: now(c), dec: 1, unit: '°', ch: c, t, zero: true, ok: c && cov(c, t - 3000),
+      this.fill(this.tiles[k], { value: now(c), dec: 1, unit: '°', ch: c, t, zero: true, ok: c && cov(c, t - Math.max(3, D) * 1000),
         side: k === 'heel' && isFinite(now(c)) ? (Math.abs(now(c)) < 0.5 ? 'piatta' : now(c) > 0 ? 'a dritta' : 'a sinistra') : k === 'pitch' && isFinite(now(c)) ? (Math.abs(now(c)) < 0.3 ? 'in piano' : now(c) > 0 ? 'prua su' : 'prua giù') : '',
         W, rows: [['Media', r => r[k] && r[k].mean, 1, '°'], ['Ampiezza', r => r[k] && r[k].range, 1, '°'], ['Oscillazioni', r => r[k] && r[k].osc, 0, '/min']], covOf: (w) => w.r[k] && w.r[k].cov });
     }
     // Conduzione
-    const sogNow = ch.sog ? interp(ch.sog, t) : NaN;
+    const sogNow = dampedValue(ch.sog, t, D, false);
     this.fill(this.tiles.sog, { value: sogNow, dec: 1, unit: 'kn', ch: ch.sog, t, ok: ch.sog && t - ch.sog.t[ch.sog.t.length - 1] < 3000,
       side: ch.sog && isFinite(W[1].r.sog?.mean) ? trendTxt(sogNow - W[1].r.sog.mean, 0.3, 'kn') : '',
       W, rows: [['Media', r => r.sog && r.sog.mean, 1, 'kn'], ['Massima', r => r.sog && r.sog.max, 1, 'kn'], ['Costanza', r => r.sog && r.sog.sd, 2, 'kn ±']], covOf: w => w.r.sog && w.r.sog.cov });
-    const cogNow = ch.cog ? interp(ch.cog, t) : NaN;
+    const cogNow = dampedValue(ch.cog, t, D, true);
     this.fill(this.tiles.cog, { value: isFinite(cogNow) ? (cogNow + 360) % 360 : NaN, dec: 0, unit: '°', ch: ch.cog, t, circ: true, ok: ch.cog && sogNow > 1.5,
       side: isFinite(sogNow) && sogNow <= 1.5 ? 'barca ferma: rotta incerta' : '',
       W, rows: [['Oscillazione', w => w.x.cogSd, 1, '° ±'], ['Ampiezza', w => w.x.cogRange, 0, '°'], ['Cambio più veloce', w => w.x.cogRate, 1, '°/s']], useW: true, covOf: w => w.r.sog && w.r.sog.cov });
