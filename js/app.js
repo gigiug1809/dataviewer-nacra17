@@ -8,6 +8,8 @@ const Router = {
     const hs = location.hash || '#/';
     // il live non ha bisogno della cartella della libreria (funziona anche su iPad)
     let lm;
+    if ((lm = /^#\/live\/([^/]+)\/quadro$/.exec(hs))) { this.show('viewer'); Quadro.open(decodeURIComponent(lm[1]).toUpperCase()); return; }
+    Quadro.close();
     if (hs === '#/live') { Viewer.close(); this.show('home'); Live.page(); return; }
     if ((lm = /^#\/live\/([^/]+)$/.exec(hs))) { this.show('viewer'); Live.open(decodeURIComponent(lm[1]).toUpperCase()); return; }
     if (!Store.root) {

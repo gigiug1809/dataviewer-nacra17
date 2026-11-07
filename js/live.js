@@ -100,11 +100,12 @@ const Live = {
     const url = h('input', { type: 'text', class: 'full', value: srv.url, placeholder: LIVE_PUBLIC });
     const user = h('input', { type: 'text', class: 'full', value: srv.username, placeholder: 'vuoto per il server pubblico', autocomplete: 'off' });
     const pass = h('input', { type: 'password', class: 'full', value: srv.password, autocomplete: 'off' });
-    const go = () => {
+    const go = (view = LS.get('liveView', 'quadro')) => {
       const c = code.value.trim().toUpperCase();
       if (c.length < 4) { toast('Scrivi il codice barca che vedi sul telefono.'); code.focus(); return; }
       LS.set('liveCode', c); LS.set('liveServer', { url: url.value.trim(), username: user.value.trim(), password: pass.value });
-      Router.go('#/live/' + encodeURIComponent(c));
+      LS.set('liveView', view);
+      Router.go('#/live/' + encodeURIComponent(c) + (view === 'quadro' ? '/quadro' : ''));
     };
     code.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
     root.append(h('div', { class: 'page' },
@@ -117,7 +118,9 @@ const Live = {
           h('details', null, h('summary', null, 'Server (solo se ne usi uno tuo)'),
             h('div', { style: { display: 'grid', gap: '10px', marginTop: '10px' } }, h('label', { class: 'f' }, 'Indirizzo', url), h('label', { class: 'f' }, 'Utente', user), h('label', { class: 'f' }, 'Password', pass),
               h('p', { class: 'stat' }, 'Gli stessi dati che hai messo nel telefono in "Server e codice".'))),
-          h('button', { class: 'btn primary', style: { minHeight: '48px', fontSize: '16px' }, onclick: go }, 'Collegati'),
+          h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' } },
+            h('button', { class: 'btn primary', style: { minHeight: '56px', fontSize: '16px', flexDirection: 'column', gap: '2px' }, onclick: () => go('quadro') }, 'Quadro tablet', h('span', { style: { fontWeight: 500, fontSize: '12px', opacity: .85 } }, 'numeri grandi per tipo')),
+            h('button', { class: 'btn', style: { minHeight: '56px', fontSize: '16px', flexDirection: 'column', gap: '2px' }, onclick: () => go('dashboard') }, 'Dashboard completa', h('span', { class: 'muted', style: { fontWeight: 500, fontSize: '12px' } }, 'mappa, grafici, pannelli'))),
           h('p', { class: 'stat' }, 'Funziona su computer, tablet e telefono, anche in Safari: per guardare il live non serve la cartella della libreria.')))));
     setTimeout(() => code.focus(), 50);
   },
@@ -133,7 +136,7 @@ const Live = {
     const wait = h('div', { class: 'loading' }, h('div', null, h('b', null, `Live · ${code}`), h('span', { id: 'liveWait' }, 'Mi collego…'),
       h('button', { class: 'btn', onclick: () => { S.dispose(); Router.go('#/live'); } }, 'Annulla')));
     root.append(wait);
-    S.onStatus = () => { const el = $('#liveWait'); if (el) el.textContent = S.conn === 'connected' ? (S.status ? (S.status.online === false ? 'Il telefono è offline. Aspetto che si ricolleghi…' : S.status.rec ? 'Telefono in registrazione: arrivano i dati…' : 'Telefono collegato ma non registra: avvia la registrazione.') : 'Collegato. Aspetto i dati del telefono (avvia la registrazione con "Trasmetti live" acceso)…') : S.conn === 'error' ? 'Errore: ' + (S.connDetail || '') : 'Mi collego al server…'; };
+    S.onStatus = () => { const el = $('#liveWait'); if (el) el.textContent = this.statusInfo(S).wait; };
     // aspetto qualche secondo di dati, così il layout nasce con i canali giusti
     await new Promise(res => { const iv = setInterval(() => { if (!Viewer.open_ || Viewer._liveAbort) { clearInterval(iv); res(); return; } if (S.packets > 0) { const have = Object.values(S.cols).some(c => c.t.length > 1); if (have && (S.cols.heel_deg.t.length > 10 || Date.now() - S.firstPkt > 4000)) { clearInterval(iv); res(); } } if (S.packets && !S.firstPkt) S.firstPkt = Date.now(); }, 300); });
     if (!Viewer.open_ || location.hash !== '#/live/' + encodeURIComponent(code)) { S.dispose(); return; }
@@ -160,18 +163,28 @@ const Live = {
     S.onStatus = () => this.renderBar(S);
     this.renderBar(S);
   },
+  /* stato del collegamento, uguale per dashboard e quadro */
+  statusInfo(S) {
+    const st = S.status || {};
+    const lag = S.lastSampleRx ? Math.max(0, (Date.now() - S.lastSampleT) / 1000) : NaN;
+    const fresh = !!(S.lastSampleRx && Date.now() - S.lastSampleRx < 5000);
+    const ok = S.conn === 'connected' && st.online !== false && fresh;
+    const txt = S.conn !== 'connected' ? 'server: ' + ({ connecting: 'mi collego…', reconnecting: 'riconnessione…', error: 'errore' }[S.conn] || S.conn || 'mi collego…')
+      : st.online === false ? 'telefono offline' : !S.lastSampleRx ? 'in attesa dei dati' : !fresh ? `nessun dato da ${fmtDur(Date.now() - S.lastSampleRx)}` : `ritardo ${fmtNum(lag, 1)} s`;
+    const wait = S.conn === 'error' ? 'Errore di collegamento al server: ' + (S.connDetail || '') : S.conn !== 'connected' ? 'Mi collego al server…'
+      : st.online === false ? 'Il telefono è offline. Aspetto che si ricolleghi…' : st.rec ? 'Telefono in registrazione: arrivano i dati…'
+      : S.status ? 'Telefono collegato ma non registra: avvia la registrazione.' : 'Collegato. Aspetto i dati del telefono: avvia la registrazione con "Trasmetti live" acceso.';
+    return { ok, fresh, txt, wait, bat: st.bat != null ? Math.round(st.bat * 100) : null };
+  },
   renderBar(S) {
     const el = $('#liveBar');
     if (!el) return;
-    const st = S.status || {};
-    const lag = S.lastSampleRx ? (Date.now() - S.lastSampleT) / 1000 : NaN;
-    const phoneOk = S.conn === 'connected' && st.online !== false && S.lastSampleRx && Date.now() - S.lastSampleRx < 5000;
-    const txt = S.conn !== 'connected' ? 'server: ' + ({ connecting: 'mi collego…', reconnecting: 'riconnessione…', error: 'errore' }[S.conn] || S.conn)
-      : st.online === false ? 'telefono offline' : !S.lastSampleRx ? 'in attesa dei dati' : Date.now() - S.lastSampleRx > 5000 ? `nessun dato da ${fmtDur(Date.now() - S.lastSampleRx)}` : `ritardo ${fmtNum(lag, 1)} s`;
+    const info = this.statusInfo(S);
     el.textContent = '';
     el.append(...[
-      h('span', { class: 'chip', style: { background: phoneOk ? 'rgba(25,158,112,.18)' : 'rgba(201,133,0,.18)' } }, h('span', { class: 'dot', style: { background: phoneOk ? 'var(--good)' : 'var(--warn)' } }), `LIVE ${S.code} · ${txt}`),
-      st.bat != null ? h('span', { class: 'small muted' }, `batteria ${Math.round(st.bat * 100)}%`) : null,
+      h('span', { class: 'chip', style: { background: info.ok ? 'rgba(25,158,112,.18)' : 'rgba(201,133,0,.18)' } }, h('span', { class: 'dot', style: { background: info.ok ? 'var(--good)' : 'var(--warn)' } }), `LIVE ${S.code} · ${info.txt}`),
+      info.bat != null ? h('span', { class: 'small muted' }, `batteria ${info.bat}%`) : null,
+      h('button', { class: 'btn sm', title: 'Vista per il tablet: numeri grandi divisi per tipo', onclick: () => { LS.set('liveView', 'quadro'); Router.go('#/live/' + encodeURIComponent(S.code) + '/quadro'); } }, 'Quadro tablet'),
       S.follow ? null : h('button', { class: 'btn sm primary', onclick: () => { S.follow = true; Viewer.requestDraw(); this.renderBar(S); } }, 'Torna al live'),
       (() => {
         const open = S.meta.events.find(e => e.type === 'tratto' && e.t2 == null);
@@ -186,15 +199,20 @@ const Live = {
     if (S.meta.events.some(e => e.type === 'tratto' && e.t2 == null)) return;
     const n = S.meta.events.filter(e => e.type === 'tratto').length + 1;
     S.addEvent({ t: Math.round(t), t2: null, type: 'tratto', note: `Tratto ${n}`, by: from });
-    Viewer.eventsChanged(); this.renderBar(S);
+    this.changed(S);
     toast(`Tratto ${n} iniziato${from === 'telefono' ? ' dal telefono' : ''}.`, 2500);
   },
   segmentStop(S, t = S.t1, from = 'allenatore') {
     const open = S.meta.events.find(e => e.type === 'tratto' && e.t2 == null);
     if (!open) return;
     open.t2 = Math.max(open.t + 1000, Math.round(t));
-    S.save(); Viewer.eventsChanged(); this.renderBar(S);
+    S.save(); this.changed(S);
     if (Viewer.S === S) showRangeAnalysis(Viewer, open.t, open.t2, `${open.note} · riepilogo${from === 'telefono' ? ' (chiuso dal telefono)' : ''}`);
+    else if (Quadro.S === S) Quadro.summary(open);
+  },
+  changed(S) {
+    if (Viewer.S === S) { Viewer.eventsChanged(); this.renderBar(S); }
+    if (Quadro.S === S) Quadro.renderTop();
   },
   /* salvo nell'uscita del giorno (un giorno = un'uscita), senza doppioni con il file del telefono */
   async saveAs(S) {
