@@ -287,7 +287,7 @@ const Editor = {
     const input = h('input', { type: 'file', accept: '.csv,.txt,.tsv,.gpx,.fit,.tcx,.zip,text/csv', multiple: true, hidden: true, onchange: e => { this.addData([...e.target.files]); e.target.value = ''; } });
     const drop = h('div', { class: 'drop' },
       h('div', null, h('b', null, 'Trascina qui i file di dati')),
-      h('div', { class: 'small' }, 'Orologio Garmin per la frequenza cardiaca (lo .zip di "Esporta file", oppure .fit, .tcx, .gpx) · cella di carico Cyclops (.csv) · Vakaros (.csv) · Registratore N17 dell\'iPhone (.csv) · qualsiasi CSV con una colonna ora'),
+      h('div', { class: 'small' }, 'Orologio Garmin per la frequenza cardiaca (lo .zip di "Esporta file", oppure .fit, .tcx, .gpx) · cella di carico Cyclops (.csv) · Vakaros (.csv) · N17 Logger dell\'iPhone (.csv) · qualsiasi CSV con una colonna ora'),
       h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn', onclick: () => input.click() }, 'Scegli i file…'), h('button', { class: 'btn ghost', onclick: () => this.garminHelp() }, 'Come scarico i dati dal Garmin?')), input);
     this.dropZone(drop, files => this.addData(files.filter(f => DATA_RE.test(f.name)), files));
     sec.append(h('div', { class: 'ed-sec-head' }, h('h2', null, h('span', { class: 'step' }, '2'), 'Dati'),
@@ -304,7 +304,7 @@ const Editor = {
         h('li', null, 'Apri l\'uscita in barca (tipo "Navigazione a vela").'),
         h('li', null, 'In alto a destra premi l\'icona dell\'ingranaggio ⚙ e scegli ', h('b', null, '"Esporta file"'), ' (in alcune versioni si chiama "Esporta originale").'),
         h('li', null, 'Scarichi un file .zip: trascinalo qui così com\'è, senza aprirlo.')),
-      h('p', { class: 'muted' }, 'Dentro c\'è il file .fit con quello che l\'orologio ha registrato. Il Dataviewer ne usa la frequenza cardiaca; posizione e velocità le prende dal telefono e dagli altri strumenti. Le altre grandezze dell\'orologio restano disponibili, basta mettere la spunta. Vanno bene anche "Esporta in TCX" o "Esporta in GPX".'),
+      h('p', { class: 'muted' }, 'Dentro c\'è il file .fit con quello che l\'orologio ha registrato. Il Debrief ne usa la frequenza cardiaca; posizione e velocità le prende dal telefono e dagli altri strumenti. Le altre grandezze dell\'orologio restano disponibili, basta mettere la spunta. Vanno bene anche "Esporta in TCX" o "Esporta in GPX".'),
       sail.length ? h('div', null, h('b', null, 'Uscite in barca nel file che hai caricato:'),
         h('ul', { style: { margin: '6px 0 0', paddingLeft: '20px' } }, sail.map(a => h('li', { style: near.includes(a) ? { fontWeight: 700 } : null }, `${a.date} · ${a.title || a.type}${a.dur ? ' · ' + a.dur : ''}${near.includes(a) ? '  ← stesso giorno di questa uscita' : ''}`)))) : null),
       actions: [{ label: 'Ho capito', kind: 'primary' }] });

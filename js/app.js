@@ -6,6 +6,7 @@ const Router = {
   resume() { this.route(); },
   async route() {
     const hs = location.hash || '#/';
+    document.title = hs.startsWith('#/live') ? 'N17 Live' : 'N17 Debrief';
     // il live non ha bisogno della cartella della libreria (funziona anche su iPad)
     let lm;
     if ((lm = /^#\/live\/([^/]+)\/quadro$/.exec(hs))) { this.show('viewer'); Quadro.open(decodeURIComponent(lm[1]).toUpperCase()); return; }

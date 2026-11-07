@@ -92,7 +92,7 @@ const Quadro = {
           DAMP_CHOICES.map(d => h('option', { value: d, selected: d === this.damp }, d ? `media ${d} s` : 'istantanei')))),
       h('button', { class: 'btn', title: 'Salva i dati ricevuti (o scarica il CSV)', onclick: () => Live.saveAs(S) }, 'Salva'),
       h('button', { class: 'btn', title: 'Chiaro / scuro', onclick: () => { toggleTheme(); this.renderTop(); } }, theme() === 'dark' ? 'Chiaro' : 'Scuro'),
-      h('button', { class: 'btn', title: 'Dashboard completa con mappa e grafici', onclick: () => { LS.set('liveView', 'dashboard'); Router.go('#/live/' + encodeURIComponent(S.code)); } }, 'Dashboard completa')].filter(Boolean));
+      h('button', { class: 'btn', title: 'Grafici live: mappa, grafici e pannelli', onclick: () => { LS.set('liveView', 'dashboard'); Router.go('#/live/' + encodeURIComponent(S.code)); } }, 'Grafici live')].filter(Boolean));
   },
 
   /* grandezza dei numeri del quadro */

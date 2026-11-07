@@ -109,19 +109,19 @@ const Live = {
     };
     code.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
     root.append(h('div', { class: 'page' },
-      h('div', { class: 'topbar' }, h('button', { class: 'btn ghost', onclick: () => Router.go('#/') }, '← Libreria'), h('div', { class: 'brand' }, h('div', { class: 'brand-mark', html: ICON_BOAT }), h('h1', null, 'Live'))),
+      h('div', { class: 'topbar' }, h('button', { class: 'btn ghost', onclick: () => Router.go('#/') }, '← Libreria'), h('div', { class: 'brand' }, h('div', { class: 'brand-mark', html: ICON_BOAT }), h('h1', null, 'N17 Live'))),
       h('div', { class: 'welcome', style: { marginTop: '4vh' } },
         h('div', { class: 'card', style: { display: 'grid', gap: '14px' } },
           h('h2', null, 'Guarda i dati della barca in tempo reale'),
-          h('p', { class: 'muted' }, 'Sul telefono in barca, nell\'app Registratore N17, accendi "Trasmetti live" e avvia la registrazione. Poi scrivi qui il codice barca che compare sul telefono.'),
+          h('p', { class: 'muted' }, 'Sul telefono in barca, nell\'app N17 Logger, accendi "Trasmetti live" e avvia la registrazione. Poi scrivi qui il codice barca che compare sul telefono.'),
           h('label', { class: 'f' }, 'Codice barca', code),
           h('details', null, h('summary', null, 'Server (solo se ne usi uno tuo)'),
             h('div', { style: { display: 'grid', gap: '10px', marginTop: '10px' } }, h('label', { class: 'f' }, 'Indirizzo', url), h('label', { class: 'f' }, 'Utente', user), h('label', { class: 'f' }, 'Password', pass),
               h('p', { class: 'stat' }, 'Gli stessi dati che hai messo nel telefono in "Server e codice".'))),
           h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' } },
-            h('button', { class: 'btn primary', style: { minHeight: '56px', fontSize: '16px', flexDirection: 'column', gap: '2px' }, onclick: () => go('quadro') }, 'Quadro tablet', h('span', { style: { fontWeight: 500, fontSize: '12px', opacity: .85 } }, 'numeri grandi per tipo')),
-            h('button', { class: 'btn', style: { minHeight: '56px', fontSize: '16px', flexDirection: 'column', gap: '2px' }, onclick: () => go('dashboard') }, 'Dashboard completa', h('span', { class: 'muted', style: { fontWeight: 500, fontSize: '12px' } }, 'mappa, grafici, pannelli'))),
-          h('p', { class: 'stat' }, 'Funziona su computer, tablet e telefono, anche in Safari: per guardare il live non serve la cartella della libreria.')))));
+            h('button', { class: 'btn primary', style: { minHeight: '56px', fontSize: '16px', flexDirection: 'column', gap: '2px' }, onclick: () => go('quadro') }, 'Live', h('span', { style: { fontWeight: 500, fontSize: '12px', opacity: .85 } }, 'numeri grandi per tipo')),
+            h('button', { class: 'btn', style: { minHeight: '56px', fontSize: '16px', flexDirection: 'column', gap: '2px' }, onclick: () => go('dashboard') }, 'Grafici live', h('span', { class: 'muted', style: { fontWeight: 500, fontSize: '12px' } }, 'mappa, grafici, pannelli'))),
+          h('p', { class: 'stat' }, 'Funziona su computer, tablet e telefono, anche in Safari: per guardare il Live non serve la cartella della libreria.')))));
     setTimeout(() => code.focus(), 50);
   },
 
@@ -191,8 +191,8 @@ const Live = {
       h('span', { class: 'chip', style: { background: info.ok ? 'rgba(25,158,112,.18)' : 'rgba(201,133,0,.18)' } }, h('span', { class: 'dot', style: { background: info.ok ? 'var(--good)' : 'var(--warn)' } }), `LIVE ${S.code} · ${info.txt}`),
       info.bat != null ? h('span', { class: 'small muted' }, `batteria ${info.bat}%`) : null,
       info.skew ? h('span', { class: 'small', style: { color: 'var(--warn)', fontWeight: 700 }, title: info.skew }, '⚠ ora dei sensori sfasata') : null,
-      h('button', { class: 'btn sm', title: 'Vista per il tablet: numeri grandi divisi per tipo', onclick: () => { LS.set('liveView', 'quadro'); Router.go('#/live/' + encodeURIComponent(S.code) + '/quadro'); } }, 'Quadro tablet'),
-      S.follow ? null : h('button', { class: 'btn sm primary', onclick: () => { S.follow = true; Viewer.requestDraw(); this.renderBar(S); } }, 'Torna al live'),
+      h('button', { class: 'btn sm', title: 'Torna ai numeri grandi del Live', onclick: () => { LS.set('liveView', 'quadro'); Router.go('#/live/' + encodeURIComponent(S.code) + '/quadro'); } }, 'Live'),
+      S.follow ? null : h('button', { class: 'btn sm primary', onclick: () => { S.follow = true; Viewer.requestDraw(); this.renderBar(S); } }, 'Torna all\'ultimo dato'),
       (() => {
         const open = S.meta.events.find(e => e.type === 'tratto' && e.t2 == null);
         return open

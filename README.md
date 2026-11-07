@@ -1,4 +1,4 @@
-# Dataviewer Nacra 17
+# N17 Debrief e Live (ex Dataviewer Nacra 17)
 
 App per analizzare le uscite in Nacra 17: video GoPro sincronizzati con i dati (cella di carico Cyclops, Vakaros Atlas 2, GPX, qualsiasi CSV con una colonna ora), grafici, mappa, eventi e manovre.
 

@@ -1,7 +1,7 @@
 {
-  "name": "Dataviewer Nacra 17",
-  "short_name": "Dataviewer",
-  "description": "Analisi delle uscite in Nacra 17: video, dati ed eventi sincronizzati",
+  "name": "N17 Debrief e Live",
+  "short_name": "N17",
+  "description": "Nacra 17: Debrief delle uscite (video, dati ed eventi sincronizzati) e Live dei dati della barca",
   "lang": "it",
   "start_url": "./",
   "scope": "./",
