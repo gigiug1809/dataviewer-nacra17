@@ -166,6 +166,9 @@ const Viewer = {
     // così trascinare dentro un pannello (Maiusc + trascina sui grafici, la mappa) non lo muove mai
     const grip = h('span', { class: 'pnl-grip', title: 'Trascina da qui per spostare il pannello', 'aria-label': 'Sposta il pannello', html: ICONS.grip });
     const head = h('div', { class: 'pnl-head' }, grip, ttl, ...(inst.headButtons ? inst.headButtons() : []),
+      ...(PANEL_SIZE_OK(p.type) ? [
+        h('button', { class: 'icon-btn sz', title: 'Testo più piccolo', 'aria-label': 'Testo più piccolo', onclick: () => this.stepSize(inst._rec, -1) }, 'A−'),
+        h('button', { class: 'icon-btn sz', title: 'Testo più grande', 'aria-label': 'Testo più grande', onclick: () => this.stepSize(inst._rec, 1) }, 'A+')] : []),
       h('button', { class: 'icon-btn', title: 'Impostazioni del pannello', 'aria-label': 'Impostazioni', html: ICONS.gear, onclick: () => this.panelSettings(inst) }),
       h('button', { class: 'icon-btn', title: 'Chiudi il pannello', 'aria-label': 'Chiudi', html: ICONS.close, onclick: () => this.removePanel(id) }));
     head.querySelectorAll('button,select').forEach(b => b.addEventListener('mousedown', e => e.stopPropagation()));
@@ -178,6 +181,7 @@ const Viewer = {
     rec.ro.observe(body);
     inst._rec = rec;
     this.panels.set(id, rec);
+    this.applyLook(rec);
     if (save) this.layoutChanged();
     this.requestDraw();
     return rec;
@@ -211,9 +215,39 @@ const Viewer = {
   layoutChanged() { if (!this.S || !this.grid) return; this.S.meta.layout = this.layoutData(); this.S.save(); for (const r of this.panels.values()) r.ttl.textContent = r.inst.title(); },
   layoutChangedSoon: debounce(function () { Viewer.layoutChanged(); }, 800),
   panelSettings(inst) {
+    const rec = inst._rec, cfg = rec.cfg;
     const st = inst.settings ? inst.settings() : null;
-    if (!st) return;
-    modal({ title: `Impostazioni · ${PANEL_TYPES[inst._rec.type].label}`, body: st.el, wide: true, actions: [{ label: 'Annulla' }, { label: 'Applica', kind: 'primary', run: () => { st.apply(); this.layoutChanged(); if (inst._rec.type === 'video') this.rebuildPanels(p => p.id === inst._rec.id); this.requestDraw(); } }] });
+    // aspetto: uguale per tutti i pannelli
+    const size = h('select', null, SIZE_STEPS.map(v => h('option', { value: v, selected: Math.abs(v - (cfg.size || 1)) < 1e-6 }, `${Math.round(v * 100)}%`)));
+    const slim = h('input', { type: 'checkbox', checked: !!cfg.slim });
+    const look = h('div', { class: 'look-box' }, h('div', { class: 'look-h' }, 'Aspetto'),
+      h('div', { class: 'row', style: { gap: '18px' } },
+        PANEL_SIZE_OK(rec.type) ? h('label', { class: 'f' }, rec.type === 'numbers' ? 'Grandezza dei numeri' : rec.type === 'chart' ? 'Grandezza di scritte e assi' : 'Grandezza del testo', size) : null,
+        h('label', { class: 'row', style: { gap: '6px', fontSize: '13px' } }, slim, 'Barra del titolo sottile')));
+    modal({ title: `Impostazioni · ${PANEL_TYPES[rec.type].label}`, body: h('div', { style: { display: 'grid', gap: '14px' } }, st ? st.el : null, look), wide: true, actions: [{ label: 'Annulla' }, { label: 'Applica', kind: 'primary', run: () => {
+      if (st) st.apply();
+      cfg.size = Number(size.value); cfg.slim = slim.checked;
+      this.applyLook(rec);
+      this.layoutChanged(); if (rec.type === 'video') this.rebuildPanels(p => p.id === rec.id); this.requestDraw(); } }] });
+  },
+  /* grandezza del testo e barra sottile di un pannello */
+  applyLook(rec) {
+    const s = rec.cfg.size || 1;
+    rec.el.classList.toggle('slim', !!rec.cfg.slim);
+    if (rec.inst.setSize) rec.inst.setSize(s);
+    else if (PANEL_SIZE_OK(rec.type)) rec.inst.el.style.zoom = s === 1 ? '' : s;
+    const b = rec.el.querySelectorAll('.pnl-head .sz');
+    if (b.length) b[0].title = `Testo più piccolo (ora ${Math.round(s * 100)}%)`, b[1].title = `Testo più grande (ora ${Math.round(s * 100)}%)`;
+  },
+  stepSize(rec, dir) {
+    if (!rec) return;
+    const cur = rec.cfg.size || 1;
+    let i = SIZE_STEPS.findIndex(v => v >= cur - 1e-6); if (i < 0) i = SIZE_STEPS.length - 1;
+    if (SIZE_STEPS[i] > cur + 1e-6 && dir < 0) i++; // tra due gradini: prima scende a quello sotto
+    rec.cfg.size = SIZE_STEPS[clamp(i + dir, 0, SIZE_STEPS.length - 1)];
+    this.applyLook(rec);
+    this.layoutChanged(); this.requestDraw();
+    toast(`${PANEL_TYPES[rec.type].label}: ${Math.round(rec.cfg.size * 100)}%`, 1200);
   },
   addMenu(anchor) {
     menu(anchor, Object.entries(PANEL_TYPES).map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => this.addTypedPanel(type) })));
@@ -230,6 +264,12 @@ const Viewer = {
     if (rec) {
       items.push({ head: PANEL_TYPES[rec.type].label });
       items.push({ label: '⚙︎  Impostazioni del pannello…', run: () => this.panelSettings(rec.inst) });
+      if (PANEL_SIZE_OK(rec.type)) {
+        items.push({ label: `A+  Testo più grande (ora ${Math.round((rec.cfg.size || 1) * 100)}%)`, run: () => this.stepSize(rec, 1) });
+        items.push({ label: 'A−  Testo più piccolo', run: () => this.stepSize(rec, -1) });
+        if ((rec.cfg.size || 1) !== 1) items.push({ label: '↺  Grandezza normale', run: () => { rec.cfg.size = 1; this.applyLook(rec); this.layoutChanged(); this.requestDraw(); } });
+      }
+      items.push({ label: rec.cfg.slim ? '▭  Barra del titolo normale' : '▭  Barra del titolo sottile', run: () => { rec.cfg.slim = !rec.cfg.slim; this.applyLook(rec); this.layoutChanged(); } });
       items.push({ label: '⧉  Duplica', run: () => { const n = rec.el.gridstackNode; this.addPanel({ type: rec.type, w: n.w, h: n.h, cfg: JSON.parse(JSON.stringify(rec.cfg)) }); } });
       items.push({ label: '✕  Chiudi il pannello', run: () => this.removePanel(rec.id) });
       items.push({ sep: true });

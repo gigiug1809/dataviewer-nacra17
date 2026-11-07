@@ -1,5 +1,8 @@
 /* Pannelli del viewer. Ogni pannello: { el (corpo), update(t, playing), resize(), destroy(), settings() } */
 'use strict';
+/* grandezza del testo dei pannelli (A− / A+) */
+const SIZE_STEPS = [0.6, 0.75, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2, 2.5, 3];
+const PANEL_SIZE_OK = type => type !== 'map' && type !== 'video';
 const ICONS = {
   grip: '<svg viewBox="0 0 12 16" fill="currentColor"><circle cx="3.5" cy="3" r="1.4"/><circle cx="8.5" cy="3" r="1.4"/><circle cx="3.5" cy="8" r="1.4"/><circle cx="8.5" cy="8" r="1.4"/><circle cx="3.5" cy="13" r="1.4"/><circle cx="8.5" cy="13" r="1.4"/></svg>',
   gear: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/></svg>',
@@ -229,6 +232,8 @@ class ChartPanel {
     this.build();
   }
   title() { return this.cfg.title || 'Grafico'; }
+  /* grandezza di scritte e assi: rifaccio i grafici con i caratteri più grandi */
+  setSize(s) { if (this.sz === s) return; const first = this.sz == null; this.sz = s; if (!first || s !== 1) this.build(); }
   win() { return this.cfg.win != null ? this.cfg.win : this.V.win; }
   headButtons() {
     const sel = h('select', { title: 'Finestra di tempo', style: { minHeight: '22px', fontSize: '11px', padding: '1px 22px 1px 6px', backgroundPosition: 'right 6px center' } },
@@ -240,7 +245,7 @@ class ChartPanel {
     return [sel];
   }
   build() {
-    for (const l of this.lanes) l.u.destroy();
+    for (const l of this.lanes) l.u && l.u.destroy();
     this.lanes = []; this.el.textContent = '';
     const chans = this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean);
     if (!chans.length) {
@@ -255,7 +260,7 @@ class ChartPanel {
     for (const [unit, list] of groups) {
       const lane = { unit, list, colors: list.map(() => seriesColor(ci++)) };
       lane.el = h('div', { class: 'lane' });
-      lane.legend = h('div', { class: 'lane-legend' });
+      lane.legend = h('div', { class: 'lane-legend', style: { fontSize: `${Math.round(11 * (this.sz || 1))}px` } });
       lane.plot = h('div', { class: 'lane-plot' });
       lane.el.append(lane.legend, lane.plot);
       this.el.append(lane.el);
@@ -294,6 +299,7 @@ class ChartPanel {
   makePlots() {
     const S = this.S;
     for (const lane of this.lanes) {
+      if (lane.u) continue; // già fatto (build chiamato due volte di fila)
       const { data, fixed } = this.laneData(lane);
       const xs = data[0], ys = data.slice(1);
       lane.fixed = fixed;
@@ -301,16 +307,20 @@ class ChartPanel {
       const axisC = cs.getPropertyValue('--axis').trim(), gridC = cs.getPropertyValue('--grid').trim();
       const self = this;
       const rect = lane.plot.getBoundingClientRect();
+      const sz = this.sz || 1, fpx = Math.round(11 * sz);
       const opts = {
         width: Math.max(50, rect.width), height: Math.max(40, rect.height),
         legend: { show: false }, padding: [6, 8, 0, 0],
         cursor: { y: false, points: { show: false }, drag: { x: false, y: false, setScale: false } },
-        scales: { x: { time: true }, y: { range: (u, a, b) => this.cfg.yMode === 'window' && lane.unit !== '°dir' ? autoRange(a, b) : lane.fixed } },
+        scales: { x: { time: true }, y: { range: (u, a, b) => {
+          const fix = this.cfg.yMode === 'manual' && this.cfg.yFix && this.cfg.yFix[lane.unit];
+          if (fix && isFinite(fix[0]) && isFinite(fix[1]) && fix[1] > fix[0]) return [fix[0], fix[1]];
+          return this.cfg.yMode === 'window' && lane.unit !== '°dir' ? autoRange(a, b) : lane.fixed; } } },
         axes: [
-          { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, size: 4 }, size: 24, space: 90, font: '11px ' + cs.getPropertyValue('--font'), values: (u, sp) => sp.map(s => { const d = new Date(s * 1000); const w = u.scales.x.max - u.scales.x.min; return w > 900 ? `${p2(d.getHours())}:${p2(d.getMinutes())}` : `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; }) },
-          { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, size: 42, space: 28, font: '11px ' + cs.getPropertyValue('--font'), values: (u, sp) => sp.map(v => fmtNum(v, Math.abs(sp[1] - sp[0]) < 1 ? 1 : 0)) }
+          { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, size: 4 }, size: Math.round(24 * sz), space: Math.round(90 * sz), font: fpx + 'px ' + cs.getPropertyValue('--font'), values: (u, sp) => sp.map(s => { const d = new Date(s * 1000); const w = u.scales.x.max - u.scales.x.min; return w > 900 ? `${p2(d.getHours())}:${p2(d.getMinutes())}` : `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; }) },
+          { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, size: Math.round(42 * sz), space: Math.round(28 * sz), font: fpx + 'px ' + cs.getPropertyValue('--font'), values: (u, sp) => sp.map(v => fmtNum(v, Math.abs(sp[1] - sp[0]) < 1 ? 1 : 0)) }
         ],
-        series: [{}, ...lane.list.map((c, i) => ({ label: c.name, stroke: lane.colors[i], width: 1.6, points: { show: false }, spanGaps: false }))],
+        series: [{}, ...lane.list.map((c, i) => ({ label: c.name, stroke: lane.colors[i], width: this.cfg.lw || 1.6, points: { show: false }, spanGaps: false }))],
         hooks: { draw: [u => self.drawOverlay(u)], setCursor: [u => self.hover(u, lane)] }
       };
       lane.u = new uPlot(opts, [xs, ...ys], lane.plot);
@@ -432,11 +442,23 @@ class ChartPanel {
   settings() {
     const pick = channelPicker(this.S, this.cfg.ids);
     const title = h('input', { type: 'text', class: 'full', value: this.cfg.title || '', placeholder: 'Grafico' });
-    const ym = h('div', { class: 'seg' }, [['session', 'Scala fissa (tutta l\'uscita)'], ['window', 'Adatta alla finestra']].map(([v, l]) => h('button', { class: (this.cfg.yMode || 'session') === v ? 'on' : '', onclick: e => { ym.querySelectorAll('button').forEach(b => b.classList.remove('on')); e.target.classList.add('on'); ym.dataset.v = v; } }, l)));
+    // scala verticale a mano: un minimo e un massimo per ogni fascia (unità di misura) del grafico
+    const units = [...new Set(this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean).map(c => c.circular ? '°dir' : (c.unit || '-')))].filter(u => u !== '°dir');
+    const fixIn = units.map(u => { const f = (this.cfg.yFix || {})[u] || []; const lane = this.lanes.find(l => l.unit === u); const ph = lane && lane.fixed ? lane.fixed : [];
+      return { u, lo: h('input', { type: 'number', step: 'any', value: f[0] ?? '', placeholder: ph[0] != null ? fmtNum(ph[0], 1) : 'min', style: { width: '90px' } }), hi: h('input', { type: 'number', step: 'any', value: f[1] ?? '', placeholder: ph[1] != null ? fmtNum(ph[1], 1) : 'max', style: { width: '90px' } }) }; });
+    const fixBox = h('div', { class: 'f', hidden: (this.cfg.yMode || 'session') !== 'manual' }, 'Scala a mano (vuoto = automatica)',
+      units.length ? fixIn.map(f => h('div', { class: 'row', style: { gap: '8px', fontWeight: 500 } }, h('span', { style: { minWidth: '70px' } }, f.u === '-' ? 'senza unità' : f.u), 'da', f.lo, 'a', f.hi)) : h('span', { class: 'muted' }, 'Scegli prima i canali e riapri le impostazioni.'));
+    const ym = h('div', { class: 'seg' }, [['session', 'Tutta l\'uscita'], ['window', 'Adatta alla finestra'], ['manual', 'A mano']].map(([v, l]) => h('button', { class: (this.cfg.yMode || 'session') === v ? 'on' : '', onclick: e => { ym.querySelectorAll('button').forEach(b => b.classList.remove('on')); e.target.classList.add('on'); ym.dataset.v = v; fixBox.hidden = v !== 'manual'; } }, l)));
     ym.dataset.v = this.cfg.yMode || 'session';
+    const lw = h('select', null, [[1, 'sottili'], [1.6, 'normali'], [2.5, 'spesse'], [3.5, 'molto spesse']].map(([v, l]) => h('option', { value: v, selected: (this.cfg.lw || 1.6) === v }, l)));
     return {
-      el: h('div', { style: { display: 'grid', gap: '12px' } }, h('label', { class: 'f' }, 'Titolo', title), h('div', { class: 'f' }, 'Asse verticale', ym), h('div', { class: 'f' }, 'Canali (grandezze con unità diverse vanno in fasce separate)', pick.el)),
-      apply: () => { this.cfg.ids = pick.get(); this.cfg.title = title.value.trim(); this.cfg.yMode = ym.dataset.v; this.build(); }
+      el: h('div', { style: { display: 'grid', gap: '12px' } }, h('label', { class: 'f' }, 'Titolo', title), h('div', { class: 'f' }, 'Asse verticale', ym), fixBox, h('label', { class: 'f' }, 'Linee', lw), h('div', { class: 'f' }, 'Canali (grandezze con unità diverse vanno in fasce separate)', pick.el)),
+      apply: () => {
+        this.cfg.ids = pick.get(); this.cfg.title = title.value.trim(); this.cfg.yMode = ym.dataset.v; this.cfg.lw = Number(lw.value);
+        const fx = {}; for (const f of fixIn) { const a = parseFloat(f.lo.value), b = parseFloat(f.hi.value); if (isFinite(a) && isFinite(b) && b > a) fx[f.u] = [a, b]; }
+        this.cfg.yFix = fx;
+        this.build();
+      }
     };
   }
   destroy() { for (const l of this.lanes) l.u && l.u.destroy(); window.removeEventListener('mousemove', this._mm); window.removeEventListener('mouseup', this._mu); }
@@ -604,8 +626,15 @@ class NumbersPanel {
     this.build();
   }
   title() { return this.cfg.title || 'Numeri'; }
+  /* grandezza dei numeri (A− / A+); le etichette crescono meno, così restano proporzionate */
+  setSize(s) { this.el.style.setProperty('--ns', s); this.el.style.setProperty('--ls', Math.sqrt(s)); }
+  fmt(c, v) { return c.circular ? dirLabel(v) : (this.cfg.dec != null && this.cfg.dec !== '' ? fmtNum(v, Number(this.cfg.dec)) : fmtVal(c, v)); }
   build() {
     this.el.textContent = '';
+    this.el.classList.toggle('no-sub', !!this.cfg.noSub);
+    this.el.classList.toggle('no-bar', !!this.cfg.noBar);
+    this.el.classList.toggle('no-unit', !!this.cfg.noUnit);
+    this.el.classList.toggle('align-c', this.cfg.align === 'center');
     this.tiles = [];
     const chans = this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean);
     if (!chans.length) { this.el.append(h('div', { class: 'pnl-empty', style: { background: 'var(--surface)' } }, h('div', null, 'Scegli le grandezze da mostrare.', h('button', { class: 'btn sm', onclick: () => this.V.panelSettings(this) }, 'Scegli i canali')))); return; }
@@ -624,6 +653,7 @@ class NumbersPanel {
   resize() {
     const n = this.tiles ? this.tiles.length : 0;
     if (!n) return;
+    if (this.cfg.cols) { this.el.style.setProperty('--cols', Math.min(n, this.cfg.cols)); return; }
     const r = this.el.getBoundingClientRect();
     const ar = (r.width || 300) / (r.height || 300);
     let best = 1, bs = -1;
@@ -640,13 +670,13 @@ class NumbersPanel {
     const w = this.cfg.avg * 1000;
     for (const it of this.tiles || []) {
       const c = it.c, v = dampedValue(c, t, this.cfg.damp);
-      const s = c.circular ? dirLabel(v) : fmtVal(c, v);
+      const s = this.fmt(c, v);
       if (s === it.last) continue;
       it.last = s;
       it.val.textContent = s;
       const st = stats(c, t - w, t);
-      it.avg.textContent = `media ${this.cfg.avg} s ${c.circular ? dirLabel(st.mean) : fmtVal(c, st.mean)}`;
-      it.rng.textContent = c.circular ? '' : `max ${fmtVal(c, st.max)}`;
+      it.avg.textContent = `media ${this.cfg.avg} s ${this.fmt(c, st.mean)}`;
+      it.rng.textContent = c.circular ? '' : `max ${this.fmt(c, st.max)}`;
       if (!c.circular) { const lo = Math.min(0, c.min), p = isFinite(v) ? clamp((v - lo) / ((c.max - lo) || 1), 0, 1) : 0; it.bar.style.width = (p * 100).toFixed(1) + '%'; }
     }
   }
@@ -654,9 +684,17 @@ class NumbersPanel {
     const pick = channelPicker(this.S, this.cfg.ids);
     const avg = h('input', { type: 'number', min: 1, max: 600, value: this.cfg.avg });
     const damp = h('select', null, DAMP_CHOICES.map(d => h('option', { value: d, selected: d === this.cfg.damp }, d ? `media degli ultimi ${d} s` : 'valore istantaneo')));
+    const cols = h('select', null, [['', 'automatiche'], ...[1, 2, 3, 4, 5, 6].map(n => [n, String(n)])].map(([v, l]) => h('option', { value: v, selected: String(this.cfg.cols || '') === String(v) }, l)));
+    const dec = h('select', null, [['', 'come il dato'], [0, 'nessuno'], [1, '1'], [2, '2']].map(([v, l]) => h('option', { value: v, selected: String(this.cfg.dec ?? '') === String(v) }, l)));
+    const chk = (k, label, inv) => { const i = h('input', { type: 'checkbox', checked: inv ? !this.cfg[k] : !!this.cfg[k] }); i._k = k; i._inv = inv; return h('label', { class: 'row', style: { gap: '6px', fontSize: '13px' } }, i, label); };
+    const checks = [chk('noSub', 'Media e massimo sotto il numero', true), chk('noBar', 'Barretta', true), chk('noUnit', 'Unità di misura', true), chk('alignC', 'Numeri al centro', false)]; checks[3].querySelector('input').checked = this.cfg.align === 'center';
     const title = h('input', { type: 'text', class: 'full', value: this.cfg.title || '', placeholder: 'Numeri' });
-    return { el: h('div', { style: { display: 'grid', gap: '12px' } }, h('label', { class: 'f' }, 'Titolo', title), h('label', { class: 'f' }, 'Numero grande (più alto = più calmo)', damp), h('label', { class: 'f' }, 'Media e massimo sotto, sugli ultimi (secondi)', avg), h('div', { class: 'f' }, 'Grandezze', pick.el)),
-      apply: () => { this.cfg.ids = pick.get(); this.cfg.avg = Math.max(1, Number(avg.value) || 10); this.cfg.damp = Number(damp.value); this.cfg.title = title.value.trim(); this.build(); } };
+    return { el: h('div', { style: { display: 'grid', gap: '12px' } }, h('label', { class: 'f' }, 'Titolo', title), h('label', { class: 'f' }, 'Numero grande (più alto = più calmo)', damp), h('label', { class: 'f' }, 'Media e massimo sotto, sugli ultimi (secondi)', avg),
+      h('div', { class: 'row', style: { gap: '18px' } }, h('label', { class: 'f' }, 'Colonne', cols), h('label', { class: 'f' }, 'Decimali', dec)),
+      h('div', { class: 'f' }, 'Cosa mostrare', h('div', { class: 'row', style: { gap: '14px' } }, checks)), h('div', { class: 'f' }, 'Grandezze', pick.el)),
+      apply: () => { this.cfg.ids = pick.get(); this.cfg.avg = Math.max(1, Number(avg.value) || 10); this.cfg.damp = Number(damp.value);
+        this.cfg.cols = cols.value ? Number(cols.value) : null; this.cfg.dec = dec.value === '' ? null : Number(dec.value);
+        for (const l of checks) { const i = l.querySelector('input'); const v = i._inv ? !i.checked : i.checked; if (i._k === 'alignC') this.cfg.align = v ? 'center' : null; else this.cfg[i._k] = v; } this.cfg.title = title.value.trim(); this.build(); } };
   }
   destroy() {}
 }

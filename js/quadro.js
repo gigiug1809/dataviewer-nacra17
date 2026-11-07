@@ -20,6 +20,7 @@ const Quadro = {
     S.connect();
     S.onStatus = () => this.renderTop();
     this.damp = LS.get('quadroDamp', 3);
+    this.scale = LS.get('quadroScale', 1);
     this.build(root);
     this.tick();
     this.timer = setInterval(() => this.tick(), 1000);
@@ -62,6 +63,7 @@ const Quadro = {
     root.append(h('div', { class: 'qd' }, this.top, this.banner, this.wrap,
       h('div', { class: 'qd-foot' }, 'Valori in grigio: in quella finestra è arrivato meno dell\'80% dei dati, non sono affidabili. Il timone non ha un sensore: si misura dalla rotazione della barca (giroscopio del telefono). Correzioni = rotazioni oltre ' + TURN_DPS + ' °/s.')));
     this.renderTop();
+    this.applyScale();
   },
 
   /* barra in alto: stato del collegamento, tratto, cambio vista */
@@ -82,6 +84,9 @@ const Quadro = {
       open
         ? h('button', { class: 'btn qd-seg stop', onclick: () => Live.segmentStop(S) }, `■ Fine tratto · ${fmtDur(S.t1 - open.t)}`)
         : h('button', { class: 'btn qd-seg', onclick: () => Live.segmentStart(S) }, '▶ Inizia tratto'),
+      h('span', { class: 'qd-size' },
+        h('button', { class: 'btn', title: 'Numeri più piccoli', onclick: () => this.setScale(-1) }, 'A−'),
+        h('button', { class: 'btn', title: 'Numeri più grandi', onclick: () => this.setScale(1) }, 'A+')),
       h('label', { class: 'qd-damp', title: 'I numeri grandi sono la media degli ultimi secondi: più alto = più calmi e leggibili' }, 'Numeri',
         h('select', { onchange: e => { this.damp = Number(e.target.value); LS.set('quadroDamp', this.damp); this.tick(); } },
           DAMP_CHOICES.map(d => h('option', { value: d, selected: d === this.damp }, d ? `media ${d} s` : 'istantanei')))),
@@ -89,6 +94,17 @@ const Quadro = {
       h('button', { class: 'btn', title: 'Chiaro / scuro', onclick: () => { toggleTheme(); this.renderTop(); } }, theme() === 'dark' ? 'Chiaro' : 'Scuro'),
       h('button', { class: 'btn', title: 'Dashboard completa con mappa e grafici', onclick: () => { LS.set('liveView', 'dashboard'); Router.go('#/live/' + encodeURIComponent(S.code)); } }, 'Dashboard completa')].filter(Boolean));
   },
+
+  /* grandezza dei numeri del quadro */
+  setScale(dir) {
+    const steps = [0.7, 0.85, 1, 1.15, 1.3, 1.5, 1.75];
+    let i = steps.findIndex(v => v >= this.scale - 1e-6); if (i < 0) i = steps.length - 1;
+    this.scale = steps[clamp(i + dir, 0, steps.length - 1)];
+    LS.set('quadroScale', this.scale);
+    this.applyScale();
+    toast(`Numeri al ${Math.round(this.scale * 100)}%`, 1200);
+  },
+  applyScale() { const q = $('#view-viewer .qd'); if (q) q.style.setProperty('--qs', this.scale); this.sized = false; },
 
   /* ---------- aggiornamento (una volta al secondo) ---------- */
   tick() {
