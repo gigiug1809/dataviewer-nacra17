@@ -3,16 +3,6 @@
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
 const COLS = 24, ROWS = 24;
 
-(function gridCSS() {
-  // GridStack porta lo stile solo per 12 colonne: genero quello per 24
-  let css = '';
-  for (let i = 0; i <= COLS; i++) {
-    css += `.gs-${COLS}>.grid-stack-item[gs-x="${i}"]{left:${(i / COLS * 100).toFixed(4)}%}`;
-    if (i) css += `.gs-${COLS}>.grid-stack-item[gs-w="${i}"]{width:${(i / COLS * 100).toFixed(4)}%}`;
-  }
-  document.head.append(h('style', null, css));
-})();
-
 const Viewer = {
   S: null, open_: false,
   async open(folder) {
@@ -67,7 +57,7 @@ const Viewer = {
     if (this.S) { this.saveView(); this.S.saveNow(); }
     for (const p of (this.panels || new Map()).values()) { try { p.ro && p.ro.disconnect(); p.inst.destroy(); } catch (e) { /* già chiuso */ } }
     this.panels = new Map();
-    if (this.grid) { this.grid.destroy(false); this.grid = null; }
+    if (this.grid) { this.grid.destroy(); this.grid = null; }
     if (this.S) this.S.dispose();
     this.S = null; this.frameArea = null;
     $('#view-viewer').textContent = '';
@@ -112,7 +102,7 @@ const Viewer = {
       root.append(this.dashTop(), this.frameArea || this.gridWrap, this.buildTimeline());
       this.setEditing(!this.locked, true);
     } else root.append(top, this.gridWrap, this.buildTimeline());
-    this.grid = GridStack.init({ column: COLS, cellHeight: this.cellH(), margin: 0, float: true, handle: '.pnl-grip', animate: false, staticGrid: this.locked, resizable: { handles: 'se' }, disableOneColumnMode: true, columnOpts: { breakpoints: [] } }, this.gridEl);
+    this.grid = new FreeGrid(this.gridEl, { cols: COLS, cellH: this.cellH(), locked: this.locked, handle: '.pnl-grip' });
     this.panels = new Map();
     const layout = (m.layout && m.layout.length ? m.layout : defaultLayout(S));
     for (const p of layout) this.addPanel(p, false);
@@ -230,8 +220,7 @@ const Viewer = {
     const cfg = p.cfg || {};
     const Cls = PANEL_CLASSES[p.type];
     if (!Cls) return;
-    // costruisco il pannello completo (con la maniglia) PRIMA di darlo a GridStack: GridStack cerca il punto
-    // di presa solo quando registra il pannello, e se non lo trova rende trascinabile tutto il pannello
+    // costruisco il pannello completo (con la maniglia) prima di darlo alla griglia, che cerca lì la maniglia
     const el = h('div', { class: 'grid-stack-item' }, h('div', { class: 'grid-stack-item-content' }));
     const content = el.firstChild;
     const inst = new Cls(this, cfg);
@@ -248,8 +237,7 @@ const Viewer = {
     head.querySelectorAll('button,select').forEach(b => b.addEventListener('mousedown', e => e.stopPropagation()));
     const body = h('div', { class: 'pnl-body' }, inst.el);
     content.append(head, body);
-    this.gridEl.append(el);
-    this.grid.makeWidget(el, { x: p.x, y: p.y, w: p.w || 6, h: p.h || 8, id, autoPosition: p.x == null });
+    this.grid.add(el, { x: p.x, y: p.y, w: p.w || 6, h: p.h || 8, z: p.z, id, autoPosition: p.x == null, maxY: this.S && this.S.dash ? ROWS : Infinity });
     const rec = { id, type: p.type, cfg, inst, el, ttl, body };
     rec.ro = new ResizeObserver(debounce(() => { if (this.panels.get(id) !== rec) return; inst.resize(); this.requestDraw(); }, 60)); // pannello già chiuso: niente
     rec.ro.observe(body);
@@ -264,7 +252,7 @@ const Viewer = {
     const r = this.panels.get(id);
     if (!r) return;
     r.ro.disconnect(); r.inst.destroy();
-    this.grid.removeWidget(r.el);
+    this.grid.remove(r.el);
     this.panels.delete(id);
     this.layoutChanged();
   },
@@ -273,16 +261,16 @@ const Viewer = {
     for (const p of layout) {
       if (!filter(p)) continue;
       const r = this.panels.get(p.id);
-      r.ro.disconnect(); r.inst.destroy(); this.grid.removeWidget(r.el); this.panels.delete(p.id);
+      r.ro.disconnect(); r.inst.destroy(); this.grid.remove(r.el); this.panels.delete(p.id);
       this.addPanel(p, false);
     }
     this.requestDraw();
   },
   layoutData() {
     const out = [];
-    for (const it of this.grid.getGridItems()) {
-      const n = it.gridstackNode, r = this.panels.get(n.id);
-      if (r) out.push({ id: n.id, type: r.type, x: n.x, y: n.y, w: n.w, h: n.h, cfg: r.cfg });
+    for (const it of this.grid.items()) {
+      const n = it.node, r = this.panels.get(n.id);
+      if (r) out.push({ id: n.id, type: r.type, x: n.x, y: n.y, w: n.w, h: n.h, z: n.z, cfg: r.cfg });
     }
     return out;
   },
@@ -293,21 +281,27 @@ const Viewer = {
     const st = inst.settings ? inst.settings() : null;
     // aspetto: uguale per tutti i pannelli
     const size = h('select', null, SIZE_STEPS.map(v => h('option', { value: v, selected: Math.abs(v - (cfg.size || 1)) < 1e-6 }, `${Math.round(v * 100)}%`)));
-    const slim = h('input', { type: 'checkbox', checked: !!cfg.slim });
+    const head = h('select', null, [['', 'Sottile, con il nome'], ['hide', 'Nascosta (compare passando sopra)']].map(([v, l]) => h('option', { value: v, selected: (cfg.head || '') === v }, l)));
+    const clear = h('input', { type: 'checkbox', checked: !!cfg.clear });
+    const lay = (how, label) => h('button', { class: 'btn sm', onclick: () => { if (this.grid.restack(rec.el, how)) toast('Livello cambiato.', 1200); else toast('È già lì.', 1200); } }, label);
     const look = h('div', { class: 'look-box' }, h('div', { class: 'look-h' }, 'Aspetto'),
-      h('div', { class: 'row', style: { gap: '18px' } },
+      h('div', { class: 'row', style: { gap: '18px', flexWrap: 'wrap', alignItems: 'flex-end' } },
         PANEL_SIZE_OK(rec.type) ? h('label', { class: 'f' }, rec.type === 'numbers' ? 'Grandezza dei numeri' : rec.type === 'chart' ? 'Grandezza di scritte e assi' : 'Grandezza del testo', size) : null,
-        h('label', { class: 'row', style: { gap: '6px', fontSize: '13px' } }, slim, 'Barra del titolo sottile')));
+        h('label', { class: 'f' }, 'Barra del titolo', head),
+        h('label', { class: 'row', style: { gap: '6px', fontSize: '13px' } }, clear, 'Sfondo trasparente')),
+      h('div', { class: 'row', style: { gap: '6px', flexWrap: 'wrap', marginTop: '10px', alignItems: 'center' } }, h('span', { class: 'muted small' }, 'Livello (se è sopra o sotto altri pannelli):'),
+        lay('front', '⤒ In primo piano'), lay('up', '↑ Avanti'), lay('down', '↓ Indietro'), lay('back', '⤓ In fondo')));
     modal({ title: `Impostazioni · ${PANEL_TYPES[rec.type].label}`, body: h('div', { style: { display: 'grid', gap: '14px' } }, st ? st.el : null, look), wide: true, actions: [{ label: 'Annulla' }, { label: 'Applica', kind: 'primary', run: () => {
       if (st) st.apply();
-      cfg.size = Number(size.value); cfg.slim = slim.checked;
+      cfg.size = Number(size.value); cfg.head = head.value || undefined; cfg.clear = clear.checked || undefined; delete cfg.slim;
       this.applyLook(rec);
       this.layoutChanged(); if (rec.type === 'video') this.rebuildPanels(p => p.id === rec.id); this.requestDraw(); } }] });
   },
   /* grandezza del testo e barra sottile di un pannello */
   applyLook(rec) {
     const s = rec.cfg.size || 1;
-    rec.el.classList.toggle('slim', !!rec.cfg.slim);
+    rec.el.classList.toggle('nohead', rec.cfg.head === 'hide');
+    rec.el.classList.toggle('clear', !!rec.cfg.clear);
     if (rec.inst.setSize) rec.inst.setSize(s);
     else if (PANEL_SIZE_OK(rec.type)) rec.inst.el.style.zoom = s === 1 ? '' : s;
     const b = rec.el.querySelectorAll('.pnl-head .sz');
@@ -331,7 +325,7 @@ const Viewer = {
     e.preventDefault(); e.stopPropagation();
     const item = e.target.closest('.grid-stack-item');
     const rec = item ? [...this.panels.values()].find(r => r.el === item) : null;
-    const cell = this.grid.getCellFromPixel({ left: e.clientX, top: e.clientY }, false);
+    const cell = this.grid.cellAt(e.clientX, e.clientY);
     const at = { x: Math.max(0, Math.min(COLS - 6, cell.x)), y: Math.max(0, cell.y) };
     if (this.S.dash && this.locked) return; // dashboard bloccata: niente menu (sull'iPad il tocco lungo non deve aprire nulla)
     const add = this.panelTypes().map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => this.addTypedPanel(type, rec ? null : at) }));
@@ -345,8 +339,13 @@ const Viewer = {
         items.push({ label: 'A−  Testo più piccolo', run: () => this.stepSize(rec, -1) });
         if ((rec.cfg.size || 1) !== 1) items.push({ label: '↺  Grandezza normale', run: () => { rec.cfg.size = 1; this.applyLook(rec); this.layoutChanged(); this.requestDraw(); } });
       }
-      items.push({ label: rec.cfg.slim ? '▭  Barra del titolo normale' : '▭  Barra del titolo sottile', run: () => { rec.cfg.slim = !rec.cfg.slim; this.applyLook(rec); this.layoutChanged(); } });
-      items.push({ label: '⧉  Duplica', run: () => { const n = rec.el.gridstackNode; this.addPanel({ type: rec.type, w: n.w, h: n.h, cfg: JSON.parse(JSON.stringify(rec.cfg)) }); } });
+      const look = (k, v) => { rec.cfg[k] = v; this.applyLook(rec); this.layoutChanged(); this.requestDraw(); };
+      items.push({ label: rec.cfg.head === 'hide' ? '▭  Mostra la barra del titolo' : '▭  Nascondi la barra del titolo', run: () => look('head', rec.cfg.head === 'hide' ? undefined : 'hide') });
+      items.push({ label: rec.cfg.clear ? '◼  Sfondo pieno' : '◌  Sfondo trasparente', run: () => look('clear', rec.cfg.clear ? undefined : true) });
+      items.push({ sep: true }, { head: 'Livello' });
+      for (const [how, l] of [['front', '⤒  Porta in primo piano'], ['up', '↑  Porta avanti'], ['down', '↓  Manda indietro'], ['back', '⤓  Manda in fondo']]) items.push({ label: l, run: () => { if (!this.grid.restack(rec.el, how)) toast('È già lì.', 1200); } });
+      items.push({ sep: true });
+      items.push({ label: '⧉  Duplica', run: () => { const n = rec.el.node; this.addPanel({ type: rec.type, x: Math.min(COLS - n.w, n.x + 1), y: n.y + 1, w: n.w, h: n.h, cfg: JSON.parse(JSON.stringify(rec.cfg)) }); } });
       items.push({ label: '✕  Chiudi il pannello', run: () => this.removePanel(rec.id) });
       items.push({ sep: true });
     }
@@ -362,7 +361,8 @@ const Viewer = {
   addTypedPanel(type, at) {
     const cfg = {};
     if (type === 'video') { const used = [...this.panels.values()].filter(r => r.type === 'video').map(r => r.cfg.cam); const c = this.S.meta.cameras.find(c => !used.includes(c.id)) || this.S.meta.cameras[0]; cfg.cam = c && c.id; }
-    const sz = { video: [8, 10], chart: [8, 8], map: [7, 9], numbers: [5, 8], events: [8, 9], stats: [6, 7], coverage: [8, 5], averages: [7, 10], bar: [8, 4] }[type] || [6, 6];
+    const sz = { video: [8, 10], chart: [8, 8], map: [7, 9], numbers: [5, 8], events: [8, 9], stats: [6, 7], coverage: [8, 5], averages: [7, 10], bar: [6, 2] }[type] || [6, 6];
+    if (type === 'bar') cfg.head = 'hide'; // la barra: solo la barra con il nome piccolo
     const rec = this.addPanel(Object.assign({ type, w: sz[0], h: sz[1], cfg }, at || {}));
     if (rec) setTimeout(() => rec.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
     if (rec && ['chart', 'numbers', 'stats', 'bar'].includes(type)) this.panelSettings(rec.inst);
@@ -382,7 +382,7 @@ const Viewer = {
   },
   applyLayout(layout, save = true) {
     for (const r of this.panels.values()) { r.ro.disconnect(); r.inst.destroy(); }
-    this.grid.removeAll(true);
+    this.grid.removeAll();
     this.panels = new Map();
     for (const p of layout) this.addPanel(Object.assign({}, p, { id: uid('p') }), false);
     if (save) this.layoutChanged();
@@ -392,7 +392,7 @@ const Viewer = {
   async saveTemplate(lib) {
     const name = await promptBox('Salva il layout come modello', 'Nome del modello (es. "Bolina", "Analisi carichi")', '');
     if (!name) return;
-    const layout = this.layoutData().map(p => ({ type: p.type, x: p.x, y: p.y, w: p.w, h: p.h, cfg: portableCfg(this.S, p.cfg) }));
+    const layout = this.layoutData().map(p => ({ type: p.type, x: p.x, y: p.y, w: p.w, h: p.h, z: p.z, cfg: portableCfg(this.S, p.cfg) }));
     lib.templates = lib.templates.filter(t => t.name !== name);
     lib.templates.push({ name, layout });
     await Store.saveLib(lib);

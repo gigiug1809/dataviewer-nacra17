@@ -148,27 +148,39 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
 .save-dot::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
 .save-dot.pending::before { background: var(--warn); } .save-dot.error::before { background: var(--bad); }
 .vgrid-wrap { flex: 1; min-height: 0; overflow: auto; position: relative; padding: 4px; }
-.grid-stack { min-height: 100%; }
-.grid-stack-item-content { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden !important; inset: 2px !important; }
-.grid-stack-placeholder > .placeholder-content { background: var(--accent-soft) !important; border: 1.5px dashed var(--accent); border-radius: 8px; inset: 2px !important; }
-.locked .ui-resizable-handle { display: none !important; }
-.pnl-head { display: flex; align-items: center; gap: 4px; padding: 2px 4px 2px 2px; min-height: 28px; border-bottom: 1px solid var(--line); background: var(--surface-2); user-select: none; flex: none; }
-.pnl-grip { display: inline-grid; place-items: center; width: 22px; height: 24px; border-radius: 6px; color: var(--faint); cursor: grab; flex: none; touch-action: none; }
+/* griglia libera: i pannelli possono stare uno sopra l'altro (livelli) */
+.grid-stack { position: relative; min-height: 100%; }
+.grid-stack-item { position: absolute; }
+.grid-stack-item-content { position: absolute; inset: 2px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+.grid-stack-item.fg-drag > .grid-stack-item-content { border-color: var(--accent); box-shadow: var(--shadow); }
+.grid-stack-item.clear > .grid-stack-item-content { background: transparent; border-color: transparent; }
+.grid-stack:not(.locked) .grid-stack-item.clear:hover > .grid-stack-item-content { border: 1px dashed var(--line-2); }
+.fg-rs { position: absolute; right: 2px; bottom: 2px; width: 14px; height: 14px; z-index: 7; cursor: se-resize; touch-action: none; border-bottom-right-radius: 8px; opacity: 0; transition: opacity .15s;
+  background: linear-gradient(135deg, transparent 50%, var(--line-2) 50%, var(--line-2) 58%, transparent 58%, transparent 70%, var(--line-2) 70%, var(--line-2) 78%, transparent 78%); }
+.grid-stack-item:hover > .fg-rs, .fg-drag > .fg-rs { opacity: .9; }
+.locked .fg-rs { display: none; }
+/* barra del titolo sottile: nome piccolo, i pulsanti compaiono passando sopra il pannello */
+.pnl-head { display: flex; align-items: center; gap: 2px; padding: 0 2px 0 0; min-height: 20px; user-select: none; flex: none; }
+.pnl-grip { display: inline-grid; place-items: center; width: 16px; height: 18px; border-radius: 5px; color: var(--faint); cursor: grab; flex: none; touch-action: none; }
 .pnl-grip:hover { background: var(--surface-3); color: var(--fg); }
 .pnl-grip:active { cursor: grabbing; }
-.pnl-grip svg { width: 10px; height: 14px; }
+.pnl-grip svg { width: 8px; height: 12px; }
 .locked .pnl-grip { visibility: hidden; width: 6px; }
-.grid-stack-item > .ui-resizable-se { width: 16px; height: 16px; right: 0; bottom: 0; background: linear-gradient(135deg, transparent 50%, var(--line-2) 50%, var(--line-2) 58%, transparent 58%, transparent 70%, var(--line-2) 70%, var(--line-2) 78%, transparent 78%); border-bottom-right-radius: 10px; cursor: se-resize; opacity: .7; transform: none; z-index: 5; }
-.grid-stack-item > .ui-resizable-se:hover { opacity: 1; }
-.pnl-head .ttl { font-size: 12px; font-weight: 650; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
-.pnl-head .icon-btn { width: 24px; height: 24px; font-size: 13px; }
-.pnl-head .icon-btn svg { width: 14px; height: 14px; }
-.pnl-head .icon-btn.sz { width: 22px; font: 800 10px/1 var(--font); letter-spacing: -.03em; opacity: 0; transition: opacity .15s; }
-.grid-stack-item:hover .pnl-head .icon-btn.sz, .pnl-head .icon-btn.sz:focus-visible { opacity: 1; }
-.slim .pnl-head { min-height: 20px; padding-top: 0; padding-bottom: 0; }
-.slim .pnl-head .ttl { font-size: 10px; }
-.slim .pnl-head .icon-btn { width: 20px; height: 18px; }
-.slim .pnl-head select { min-height: 18px !important; font-size: 10px !important; }
+.pnl-head .ttl { font-size: 11px; font-weight: 650; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.pnl-head .icon-btn { width: 20px; height: 18px; font-size: 12px; opacity: 0; transition: opacity .15s; }
+.pnl-head .icon-btn svg { width: 12px; height: 12px; }
+.pnl-head .icon-btn.sz { width: 20px; font: 800 10px/1 var(--font); letter-spacing: -.03em; }
+.grid-stack-item:hover .pnl-head .icon-btn, .pnl-head .icon-btn:focus-visible { opacity: 1; }
+/* senza barra del titolo: la barra compare sopra il contenuto solo passando sopra */
+.nohead .pnl-head { position: absolute; top: 0; left: 0; right: 0; z-index: 6; background: var(--surface-2); border-bottom: 1px solid var(--line); border-radius: 8px 8px 0 0; opacity: 0; pointer-events: none; transition: opacity .15s; }
+.grid-stack-item.nohead:hover .pnl-head, .nohead .pnl-head:focus-within { opacity: 1; pointer-events: auto; }
+/* su iPad e telefono (niente "passare sopra"): mentre si modifica pulsanti, maniglie e barre sono sempre visibili */
+@media (hover: none) {
+  .grid-stack:not(.locked) .pnl-head .icon-btn, .grid-stack:not(.locked) .fg-rs { opacity: .9; }
+  .grid-stack:not(.locked) .fg-rs { width: 22px; height: 22px; }
+  .grid-stack:not(.locked) .nohead .pnl-head { opacity: 1; pointer-events: auto; }
+}
+.pnl-head select { min-height: 18px !important; font-size: 10px !important; }
 .look-box { border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 8px; }
 .look-h { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .pnl-body { flex: 1; min-height: 0; position: relative; overflow: hidden; }
@@ -432,12 +444,11 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
 .editing .edit-only { display: inline-flex !important; }
 .no-tl .tl { display: none; }
 .dash-mode .grid-stack.locked .pnl-head .icon-btn { display: none; }
-.dash-mode .grid-stack.locked .pnl-head { min-height: 22px; }
 .vframe-area { flex: 1; min-height: 0; display: grid; place-items: center; background: repeating-linear-gradient(45deg, var(--bg), var(--bg) 10px, var(--surface-2) 10px, var(--surface-2) 11px); overflow: hidden; }
 .vframe-area > .vgrid-wrap { flex: none; border: 2px solid var(--line-2); border-radius: 18px; background: var(--bg); box-shadow: var(--shadow); overflow: auto; }
 @media (max-width: 700px) { .vtop .title { max-width: 40vw; } .dash-top #liveBar .chip { max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
 /* pannello Barra */
-.bar-box { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 6px; padding: 6px 10px; }
+.bar-box { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 4px; padding: 3px 8px; }
 .bar-box.v { flex-direction: row; }
 .bar-box canvas { flex: 1; min-width: 0; min-height: 0; width: 100%; height: 100%; display: block; }
 .ser-table td, .ser-table th { padding: 4px 6px; }

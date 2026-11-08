@@ -1015,21 +1015,35 @@ class BarPanel {
     const barCol = inZone && cfg.zoneTint ? col('--good') : (cfg.color || col('--accent'));
     const fs = clamp(Math.min(W, H) * (horiz ? 0.13 : 0.09), 10, 22) * this.sz;
     const valTxt = isFinite(v) ? fmtNum(v, c.circular ? 0 : (c.dec ?? 1)) + (c.circular ? '°' : c.unit ? ' ' + c.unit : '') : '—';
-    // testo in alto: nome e valore
+    const label = this.units.length > 1 || cfg.title || cfg.head === 'hide'; // senza barra del titolo il nome lo scrive la barra
+    const name = this.units.length === 1 && cfg.title ? cfg.title : c.name;
     g.textBaseline = 'alphabetic';
-    // nome (se serve) e numero: in orizzontale sulla stessa riga, in verticale uno sotto l'altro
-    const label = this.units.length > 1 || cfg.title;
-    let headH = fs * 0.6;
-    g.fillStyle = col('--muted'); g.font = `600 ${Math.round(fs * 0.8)}px ${font}`; g.textAlign = 'left';
-    if (label) { g.fillText(c.name, 2, fs * 0.9); headH = horiz && cfg.showVal ? fs * 0.6 : fs * 1.35; }
-    if (cfg.showVal) {
-      const vs = horiz ? fs * 1.7 : Math.min(fs * 1.7, W / Math.max(4, valTxt.length) * 1.7);
-      g.fillStyle = col('--fg'); g.font = `800 ${Math.round(vs)}px ${font}`; g.textAlign = horiz ? 'right' : 'left';
-      g.fillText(valTxt, horiz ? W - 2 : 2, headH + vs * 0.85);
-      headH += vs * 1.1;
+    let area, sf, scaleS = 0;
+    if (horiz) {
+      // in orizzontale: nome piccolo a sinistra e numero a destra sulla stessa riga, sotto la barra.
+      // Anche in un pannello basso la barra resta visibile: prima si toglie la scala, poi si rimpicciolisce il testo.
+      const lf = clamp(H * 0.2, 9, 13) * this.sz, vf = cfg.showVal ? clamp(H * 0.34, 11, 40) * this.sz : 0;
+      const top = Math.max(label ? lf * 1.3 : 0, vf * 1.02);
+      if (label) { g.fillStyle = col('--muted'); g.font = `600 ${Math.round(lf)}px ${font}`; g.textAlign = 'left'; g.fillText(name, 2, Math.max(lf, top * 0.82)); }
+      if (vf) { g.fillStyle = col('--fg'); g.font = `800 ${Math.round(vf)}px ${font}`; g.textAlign = 'right'; g.fillText(valTxt, W - 2, top * 0.86); }
+      sf = Math.max(9, lf * 0.9);
+      const rest = H - top - 4;
+      if (cfg.showScale && rest > sf * 1.4 + 14) scaleS = sf * 1.4;
+      area = { x: 6, y: top + 3, w: W - 12, h: rest - scaleS };
+    } else {
+      // in verticale: nome e numero uno sotto l'altro, la barra sotto
+      let headH = fs * 0.6;
+      g.fillStyle = col('--muted'); g.font = `600 ${Math.max(10, Math.round(fs * 0.8))}px ${font}`; g.textAlign = 'left';
+      if (label) { g.fillText(name, 2, Math.max(10, fs * 0.8) * 1.1); headH = Math.max(10, fs * 0.8) * 1.6; }
+      if (cfg.showVal) {
+        const vs = Math.min(fs * 1.7, W / Math.max(4, valTxt.length) * 1.7);
+        g.fillStyle = col('--fg'); g.font = `800 ${Math.round(vs)}px ${font}`;
+        g.fillText(valTxt, 2, headH + vs * 0.85);
+        headH += vs * 1.1;
+      }
+      sf = fs * 0.7; scaleS = cfg.showScale ? fs * 1.3 : 0;
+      area = { x: scaleS + 4, y: headH + 2, w: W - scaleS - 8, h: H - headH - 8 };
     }
-    const scaleS = cfg.showScale ? fs * 1.3 : 0;
-    const area = horiz ? { x: 6, y: headH, w: W - 12, h: H - headH - scaleS } : { x: scaleS + 4, y: headH + 2, w: W - scaleS - 8, h: H - headH - 8 };
     if (area.w < 8 || area.h < 8) return;
     const th = clamp(cfg.thick, 0.1, 1);
     const track = horiz ? { x: area.x, y: area.y + area.h * (1 - th) / 2, w: area.w, h: area.h * th } : { x: area.x + area.w * (1 - th) / 2, y: area.y, w: area.w * th, h: area.h };
@@ -1064,10 +1078,10 @@ class BarPanel {
     // zero
     if (lo < 0 && hi > 0) { g.fillStyle = col('--line-2'); const z = P(0); if (horiz) g.fillRect(z - 1, track.y, 2, track.h); else g.fillRect(track.x, z - 1, track.w, 2); }
     // scala
-    if (cfg.showScale) {
-      const span = hi - lo, raw = span / Math.max(2, Math.floor((horiz ? track.w : track.h) / (fs * 3.2)));
+    if (scaleS) {
+      const span = hi - lo, raw = span / Math.max(2, Math.floor((horiz ? track.w : track.h) / (sf * 4.5)));
       const m = Math.pow(10, Math.floor(Math.log10(raw))), step = [1, 2, 2.5, 5, 10].map(k => k * m).find(k => k >= raw) || raw;
-      g.fillStyle = col('--faint'); g.font = `500 ${Math.round(fs * 0.7)}px ${font}`; g.textAlign = horiz ? 'center' : 'right'; g.textBaseline = horiz ? 'top' : 'middle';
+      g.fillStyle = col('--faint'); g.font = `500 ${Math.round(sf)}px ${font}`; g.textAlign = horiz ? 'center' : 'right'; g.textBaseline = horiz ? 'top' : 'middle';
       for (let x = Math.ceil(lo / step) * step; x <= hi + 1e-9; x += step) {
         const p = P(x), lab = fmtNum(x, step < 1 ? 1 : 0);
         if (horiz) { g.fillRect(p - 0.5, track.y + track.h, 1, 4); g.fillText(lab, p, track.y + track.h + 5); }
