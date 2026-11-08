@@ -133,3 +133,12 @@ function downloadText(name, text, type = 'text/csv') {
   const a = h('a', { href: URL.createObjectURL(new Blob([text], { type })), download: name });
   document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
+function fmtAgo(ms) {
+  const d = Date.now() - ms;
+  if (!isFinite(d)) return '';
+  if (d < 90e3) return 'adesso';
+  if (d < 3600e3) return `${Math.round(d / 60e3)} min fa`;
+  if (d < 86400e3) return `${Math.round(d / 3600e3)} h fa`;
+  const g = Math.round(d / 86400e3);
+  return g === 1 ? 'ieri' : `${g} giorni fa`;
+}

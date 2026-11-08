@@ -1,6 +1,7 @@
-/* Dati live dal Registratore N17 per iPhone, via MQTT.
-   Funziona anche senza cartella della libreria (per esempio su iPad, in Safari):
-   i dati restano in memoria e alla fine si salvano come uscita o si scaricano in CSV. */
+/* N17 Live: dati in tempo reale dal Logger dell'iPhone, via MQTT.
+   Funziona anche senza cartella della libreria (per esempio su iPad, in Safari).
+   I dati del Live sono una copia provvisoria: il file completo resta sul telefono e a terra va nel Debrief.
+   I tratti segnati qui arrivano anche al telefono, che li scrive nel suo file. */
 'use strict';
 const LIVE_PUBLIC = 'wss://broker.hivemq.com:8884/mqtt';
 // ordine dei valori nei pacchetti del telefono
@@ -10,25 +11,52 @@ const LIVE_G = ['lat', 'lon', 'gps_speed_kn', 'gps_course', 'gps_hacc_m'];
 class LiveSession extends Session {
   constructor(code, server) {
     const saved = LS.get('live.' + code, {});
-    if (LS.get('liveLayoutVer', 0) < 3) { LS.set('liveLayout', null); LS.set('liveLayoutVer', 3); }
-    super(null, newSessionMeta({ title: `Live ${code}`, date: ymdOf(Date.now()), events: saved.events || [], layout: LS.get('liveLayout', null), view: { win: saved.win ?? 120000 } }));
+    super(null, newSessionMeta({ title: `Live ${code}`, date: ymdOf(Date.now()), events: saved.events || [], layout: null, view: { win: saved.win ?? 120000 } }));
     this.live = true; this.follow = true; this.code = code; this.server = server;
-    this.cols = {}; for (const k of [...LIVE_M, ...LIVE_G]) this.cols[k] = { t: [], v: [] };
+    this.cols = {}; for (const k of [...LIVE_M, ...LIVE_G]) this.cols[k] = { t: new Float64Array(2048), v: new Float64Array(2048), n: 0 };
     this.seen = new Set(); this.sorted = true;
     this.status = null; this.lastRx = 0; this.lastSampleRx = 0; this.lastSampleT = 0; this.packets = 0;
     this.channelMap = new Map();
   }
-  save() { LS.set('live.' + this.code, { events: this.meta.events, win: this.meta.view.win }); if (this.meta.layout) LS.set('liveLayout', this.meta.layout); this.onSave && this.onSave('saved'); }
+  save() {
+    if (!this.sim) LS.set('live.' + this.code, { events: this.meta.events, win: this.meta.view.win });
+    // la disposizione dei pannelli va nella dashboard (per l'orientamento in uso), solo se l'ha cambiata chi guarda:
+    // così un iPad con una copia vecchia non cancella le modifiche fatte sul Mac
+    if (this.dash && this.layoutDirty && this.meta.layout) {
+      this.layoutDirty = false;
+      const d = Dash.get(this.dash.id) || this.dash;
+      d[this.orient] = JSON.parse(JSON.stringify(this.meta.layout));
+      this.dash = d; this.dashSeen = Dash.save(d).updated;
+    }
+    this.onSave && this.onSave('saved');
+  }
   saveNow() { this.save(); }
   async load() { this.rebuild(); }
 
-  connect() {
+  /* data = false: solo la sincronizzazione delle dashboard (mentre si compone con i dati simulati) */
+  connect({ data = true } = {}) {
     const c = this.client = new MqttClient({ url: this.server.url || LIVE_PUBLIC, username: this.server.username, password: this.server.password });
     c.onstate = (s, d) => { this.conn = s; this.connDetail = d; this.onStatus && this.onStatus(); };
-    c.subscribe(`n17dv/${this.code}/live`, (t, p) => this.ingest(p));
-    c.subscribe(`n17dv/${this.code}/status`, (t, p) => { try { this.status = JSON.parse(new TextDecoder().decode(p)); this.status.rx = Date.now(); } catch (e) { /* messaggio non valido */ } this.onStatus && this.onStatus(); });
+    if (data) {
+      c.subscribe(`n17dv/${this.code}/live`, (t, p) => this.ingest(p));
+      c.subscribe(`n17dv/${this.code}/status`, (t, p) => { try { this.status = JSON.parse(new TextDecoder().decode(p)); this.status.rx = Date.now(); } catch (e) { /* messaggio non valido */ } this.onStatus && this.onStatus(); });
+    }
+    const unlink = Dash.attach(c, this.code);
+    // dashboard cambiata da un altro dispositivo mentre la guardo (e non la sto modificando): la ricarico
+    const onDash = () => {
+      if (!this.dash || !Viewer.locked || Viewer.S !== this) return;
+      const d = Dash.get(this.dash.id);
+      if (!d || (d.updated || 0) <= (this.dashSeen || this.dash.updated || 0)) return;
+      this.dash = d; this.dashSeen = d.updated;
+      Viewer.applyLayout(Dash.layout(d, this.orient), false);
+      toast(`"${d.name}" è stata modificata su un altro dispositivo: aggiornata.`, 4000);
+    };
+    Dash.listeners.add(onDash);
+    this.unDash = () => { unlink(); Dash.listeners.delete(onDash); };
     c.connect();
   }
+  /* comando al telefono: inizio (s) o fine (f) di un tratto, che il telefono scrive nel suo file */
+  sendCmd(c, t) { if (this.client && !this.sim) this.client.publish(`n17dv/${this.code}/cmd`, JSON.stringify({ c, t: Math.round(t) })); }
   ingest(payload) {
     let m;
     try { m = JSON.parse(new TextDecoder().decode(payload)); } catch (e) { return; }
@@ -41,8 +69,9 @@ class LiveSession extends Session {
     const add = (key, t, v) => {
       if (v == null || !isFinite(v)) return;
       const c = this.cols[key];
-      if (c.t.length && t < c.t[c.t.length - 1]) this.sorted = false;
-      c.t.push(t); c.v.push(v);
+      if (c.n && t < c.t[c.n - 1]) this.sorted = false;
+      if (c.n === c.t.length) { const T = new Float64Array(c.n * 2), V = new Float64Array(c.n * 2); T.set(c.t); V.set(c.v); c.t = T; c.v = V; } // raddoppio lo spazio
+      c.t[c.n] = t; c.v[c.n] = v; c.n++;
     };
     for (const r of m.m || []) { const t = m.b + r[0]; LIVE_M.forEach((k, i) => add(k, t, r[i + 1])); this.lastSampleT = Math.max(this.lastSampleT, t); this.lastMT = t; this.lastMRx = Date.now(); }
     for (const k of m.e || []) { // [tipo, dt]: "s" inizio tratto, "f" fine tratto
@@ -57,15 +86,17 @@ class LiveSession extends Session {
   rebuild() {
     if (!this.sorted) {
       for (const c of Object.values(this.cols)) {
-        const idx = c.t.map((_, i) => i).sort((a, b) => c.t[a] - c.t[b]);
-        c.t = idx.map(i => c.t[i]); c.v = idx.map(i => c.v[i]);
+        const idx = Array.from({ length: c.n }, (_, i) => i).sort((a, b) => c.t[a] - c.t[b]);
+        const T = new Float64Array(c.t.length), V = new Float64Array(c.v.length);
+        idx.forEach((j, i) => { T[i] = c.t[j]; V[i] = c.v[j]; });
+        c.t = T; c.v = V;
       }
       this.sorted = true;
     }
     for (const [key, c] of Object.entries(this.cols)) {
-      if (c.t.length < 2) continue;
+      if (c.n < 2) continue;
       const m = PHONE_COLS[key];
-      const fresh = makeChannel({ id: `live:${key}`, name: m[0], unit: m[1], role: m[2], src: 'live', srcName: 'iPhone live', srcKind: 'iPhone', t: Float64Array.from(c.t), v: Float64Array.from(c.v) });
+      const fresh = makeChannel({ id: `live:${key}`, name: m[0], unit: m[1], role: m[2], src: 'live', srcName: 'iPhone live', srcKind: 'iPhone', t: c.t.subarray(0, c.n), v: c.v.subarray(0, c.n) });
       const old = this.channelMap.get(key);
       if (old) Object.assign(old, fresh); else this.channelMap.set(key, fresh);
     }
@@ -77,13 +108,13 @@ class LiveSession extends Session {
   hasData() { return this.channelMap.size > 0; }
   // il telefono ha iniziato una registrazione nuova: i numeri dei pacchetti ripartono da zero
   newRecording() { this.seen.clear(); }
-  dispose() { if (this.client) this.client.close(); }
+  dispose() { if (this.sim) this.sim.stop(); if (this.unDash) this.unDash(); if (this.client) this.client.close(); }
 
   /* CSV nello stesso formato del file del telefono: il Dataviewer lo rilegge come un'uscita normale */
   toCSV() {
     const cols = ['lat', 'lon', 'gps_speed_kn', 'gps_course', 'gps_hacc_m', 'heel_deg', 'pitch_deg', 'heading_deg', 'roll_rate_dps', 'yaw_rate_dps', 'acc_surge_g', 'acc_heave_g', 'acc_peak_g'];
     const rows = new Map();
-    for (const k of cols) { const c = this.cols[k]; c.t.forEach((t, i) => { let r = rows.get(t); if (!r) { r = {}; rows.set(t, r); } r[k] = c.v[i]; }); }
+    for (const k of cols) { const c = this.cols[k]; for (let i = 0; i < c.n; i++) { const t = c.t[i]; let r = rows.get(t); if (!r) { r = {}; rows.set(t, r); } r[k] = c.v[i]; } }
     const lines = [`# Registratore N17 · ricevuto live dal Dataviewer · codice ${this.code}`, `# registrazione ${this.recId || 'SCONOSCIUTA'}`, ['time_utc', ...cols].join(','), ['ISO8601', 'deg', 'deg', 'kn', 'deg', 'm', 'deg', 'deg', 'deg', 'deg/s', 'deg/s', 'g', 'g', 'g'].join(',')];
     for (const t of [...rows.keys()].sort((a, b) => a - b)) { const r = rows.get(t); lines.push([new Date(t).toISOString(), ...cols.map(k => r[k] ?? '')].join(',')); }
     return lines.join('\n');
@@ -91,66 +122,141 @@ class LiveSession extends Session {
 }
 
 const Live = {
-  /* pagina di collegamento */
+  /* ---------- pagina del Live: barca e dashboard ---------- */
   page() {
+    this.leavePage();
     const root = $('#view-home');
     root.textContent = '';
+    const code = Boats.current();
+    if (code) LS.set('liveCode', code);
     const srv = LS.get('liveServer', { url: '', username: '', password: '' });
-    const code = h('input', { type: 'text', value: LS.get('liveCode', ''), placeholder: 'es. K7Q2XM', maxlength: 8, style: { fontSize: '28px', fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '.15em', width: '100%', textAlign: 'center', minHeight: '56px' }, autocapitalize: 'characters', autocomplete: 'off', spellcheck: false });
+    const orient = innerWidth >= innerHeight ? 'land' : 'port';
+    const statusEl = h('div', { class: 'live-st' }, 'Mi collego…');
     const url = h('input', { type: 'text', class: 'full', value: srv.url, placeholder: LIVE_PUBLIC });
     const user = h('input', { type: 'text', class: 'full', value: srv.username, placeholder: 'vuoto per il server pubblico', autocomplete: 'off' });
     const pass = h('input', { type: 'password', class: 'full', value: srv.password, autocomplete: 'off' });
-    const go = (view = LS.get('liveView', 'quadro')) => {
-      const c = code.value.trim().toUpperCase();
-      if (c.length < 4) { toast('Scrivi il codice barca che vedi sul telefono.'); code.focus(); return; }
-      LS.set('liveCode', c); LS.set('liveServer', { url: url.value.trim(), username: user.value.trim(), password: pass.value });
-      LS.set('liveView', view);
-      Router.go('#/live/' + encodeURIComponent(c) + (view === 'quadro' ? '/quadro' : ''));
+    const saveSrv = () => { LS.set('liveServer', { url: url.value.trim(), username: user.value.trim(), password: pass.value }); this.page(); };
+
+    // barche
+    const boats = h('div', { class: 'boat-row' },
+      Boats.list().map(b => h('div', { class: 'boat' + (b.code === code ? ' on' : '') },
+        h('button', { class: 'boat-btn', onclick: () => { LS.set('liveCode', b.code); this.page(); } }, b.code),
+        Boats.list().length > 1 ? h('button', { class: 'boat-x', title: 'Togli questa barca dall\'elenco', 'aria-label': 'Togli ' + b.code, onclick: async () => { if (await confirmBox('Togli la barca', `Tolgo ${b.code} dall'elenco di questo dispositivo? I dati sul telefono non cambiano.`, 'Togli')) { Boats.remove(b.code); this.page(); } } }, '✕') : null)),
+      h('button', { class: 'btn', onclick: async () => {
+        const v = Boats.clean(await promptBox('Aggiungi una barca', 'Codice barca, uguale a quello scritto nel telefono (es. ITA98)', ''));
+        if (v.length < 3) { if (v) toast('Il codice deve avere almeno 3 lettere o cifre.'); return; }
+        Boats.add(v); LS.set('liveCode', v); this.page();
+      } }, '+ Barca'));
+
+    // dashboard
+    const grid = h('div', { class: 'dash-grid' });
+    const open = (id, edit) => Router.go(`#/live/${encodeURIComponent(code)}/${id === 'quadro' ? 'quadro' : 'd/' + encodeURIComponent(id) + (edit ? '/modifica' : '')}`);
+    const draw = () => {
+      grid.textContent = '';
+      grid.append(h('div', { class: 'dash-card' },
+        h('button', { class: 'dash-open', onclick: () => open('quadro') }, h('div', { class: 'dash-prev quadro ' + orient }, h('span', null, '12,4'), h('span', null, '8°'), h('span', null, '1,3°')),
+          h('div', { class: 'dash-name' }, 'Quadro numeri grandi'), h('div', { class: 'dash-sub' }, 'fisso: heel, trim, velocità, rotta, timone')),
+        h('div', { class: 'dash-act' }, h('button', { class: 'btn sm primary', onclick: () => open('quadro') }, 'Apri'))));
+      for (const d of Dash.list()) {
+        grid.append(h('div', { class: 'dash-card' },
+          h('button', { class: 'dash-open', onclick: () => open(d.id) }, dashPreview(Dash.layout(d, orient), orient),
+            h('div', { class: 'dash-name' }, d.name), h('div', { class: 'dash-sub' }, d.updated ? `modificata ${fmtAgo(d.updated)}` : 'standard')),
+          h('div', { class: 'dash-act' },
+            h('button', { class: 'btn sm primary', onclick: () => open(d.id) }, 'Apri'),
+            h('button', { class: 'btn sm', title: 'Modifica con dati simulati', onclick: () => open(d.id, true) }, '✎ Modifica'),
+            h('button', { class: 'icon-btn', title: 'Altro', 'aria-label': 'Altro', onclick: e => menu(e.currentTarget, [
+              { label: 'Rinomina…', run: async () => { const n = await promptBox('Rinomina la dashboard', 'Nome', d.name); if (n && n.trim()) { d.name = n.trim(); Dash.save(d); } } },
+              { label: 'Duplica', run: () => { Dash.create(d.name + ' (copia)', JSON.parse(JSON.stringify(d.land || [])), d.port ? JSON.parse(JSON.stringify(d.port)) : null); } },
+              { label: 'Rifai la disposizione verticale da quella orizzontale', run: () => { d.port = null; Dash.save(d); toast('La disposizione verticale ora segue quella orizzontale.'); } },
+              { sep: true },
+              { label: 'Elimina…', run: async () => { if (await confirmBox('Elimina la dashboard', `Elimino "${d.name}"? Sparisce anche dagli altri dispositivi collegati a ${code}.`, 'Elimina', true)) Dash.remove(d.id); } }]) }, '⋯'))));
+      }
+      grid.append(h('button', { class: 'dash-card dash-new', onclick: () => this.newDash(code) }, h('b', null, '+'), h('span', null, 'Nuova dashboard')));
     };
-    code.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
-    root.append(h('div', { class: 'page' },
-      h('div', { class: 'topbar' }, h('button', { class: 'btn ghost', onclick: () => Router.go('#/') }, '← Libreria'), h('div', { class: 'brand' }, h('div', { class: 'brand-mark', html: ICON_BOAT }), h('h1', null, 'N17 Live'))),
-      h('div', { class: 'welcome', style: { marginTop: '4vh' } },
-        h('div', { class: 'card', style: { display: 'grid', gap: '14px' } },
-          h('h2', null, 'Guarda i dati della barca in tempo reale'),
-          h('p', { class: 'muted' }, 'Sul telefono in barca, nell\'app N17 Logger, accendi "Trasmetti live" e avvia la registrazione. Poi scrivi qui il codice barca che compare sul telefono.'),
-          h('label', { class: 'f' }, 'Codice barca', code),
-          h('details', null, h('summary', null, 'Server (solo se ne usi uno tuo)'),
-            h('div', { style: { display: 'grid', gap: '10px', marginTop: '10px' } }, h('label', { class: 'f' }, 'Indirizzo', url), h('label', { class: 'f' }, 'Utente', user), h('label', { class: 'f' }, 'Password', pass),
-              h('p', { class: 'stat' }, 'Gli stessi dati che hai messo nel telefono in "Server e codice".'))),
-          h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' } },
-            h('button', { class: 'btn primary', style: { minHeight: '56px', fontSize: '16px', flexDirection: 'column', gap: '2px' }, onclick: () => go('quadro') }, 'Live', h('span', { style: { fontWeight: 500, fontSize: '12px', opacity: .85 } }, 'numeri grandi per tipo')),
-            h('button', { class: 'btn', style: { minHeight: '56px', fontSize: '16px', flexDirection: 'column', gap: '2px' }, onclick: () => go('dashboard') }, 'Grafici live', h('span', { class: 'muted', style: { fontWeight: 500, fontSize: '12px' } }, 'mappa, grafici, pannelli'))),
-          h('p', { class: 'stat' }, 'Funziona su computer, tablet e telefono, anche in Safari: per guardare il Live non serve la cartella della libreria.')))));
-    setTimeout(() => code.focus(), 50);
+    draw();
+    this.pageListener = draw;
+    Dash.listeners.add(draw);
+
+    const imp = h('input', { type: 'file', accept: '.json,application/json', hidden: true, onchange: async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { toast(`Importate ${await Dash.importFile(f)} dashboard.`); } catch (err) { toast(errMsg(err), 6000, 'bad'); } } });
+    root.append(h('div', { class: 'page live-page' },
+      h('div', { class: 'topbar' }, h('button', { class: 'btn ghost', onclick: () => Router.go('#/') }, '← Inizio'), h('div', { class: 'brand' }, h('div', { class: 'brand-mark', html: ICON_BOAT }), h('h1', null, 'N17 Live')), h('div', { class: 'sp' }),
+        h('button', { class: 'icon-btn', title: 'Tema chiaro / scuro', 'aria-label': 'Tema chiaro o scuro', onclick: toggleTheme }, '◐')),
+      h('section', { class: 'card live-sec' }, h('h2', null, '1 · Barca'), boats, statusEl,
+        h('details', null, h('summary', null, 'Server (solo se ne usi uno tuo)'),
+          h('div', { style: { display: 'grid', gap: '10px', marginTop: '10px' } }, h('label', { class: 'f' }, 'Indirizzo', url), h('label', { class: 'f' }, 'Utente', user), h('label', { class: 'f' }, 'Password', pass),
+            h('div', { class: 'row' }, h('span', { class: 'stat' }, 'Gli stessi dati che hai messo nel telefono in "Server e codice".'), h('div', { class: 'sp' }), h('button', { class: 'btn sm primary', onclick: saveSrv }, 'Usa questo server'))))),
+      h('section', { class: 'card live-sec' }, h('h2', null, '2 · Dashboard'), grid,
+        h('div', { class: 'row', style: { marginTop: '10px' } }, h('span', { class: 'stat' }, `Le dashboard si salvano con la barca: le ritrovi su ogni computer o iPad che apre ${code || 'la stessa barca'}. In verticale e in orizzontale hanno due disposizioni, scelte da sole.`), h('div', { class: 'sp' }),
+          h('button', { class: 'btn sm ghost', onclick: () => Dash.exportFile() }, 'Esporta'), h('button', { class: 'btn sm ghost', onclick: () => imp.click() }, 'Importa'), imp)),
+      h('p', { class: 'stat live-note' }, 'I numeri del Live sono una copia in diretta: il file completo resta sul telefono. A terra importalo nel Debrief, che lo mette da solo nel giorno giusto. I tratti segnati qui vengono scritti anche nel file del telefono.')));
+
+    // stato del telefono e sincronizzazione delle dashboard
+    if (!code) { statusEl.textContent = 'Aggiungi la tua barca con il codice scritto nel telefono.'; return; }
+    const c = this.pageClient = new MqttClient({ url: srv.url || LIVE_PUBLIC, username: srv.username, password: srv.password });
+    let st = null, conn = 'connecting';
+    const show = () => {
+      const age = st && st.t ? Date.now() - st.t : Infinity;
+      statusEl.className = 'live-st ' + (st && st.online !== false && st.rec ? 'ok' : 'wait');
+      statusEl.textContent = conn !== 'connected' ? (conn === 'error' ? 'Non riesco a collegarmi al server.' : 'Mi collego al server…')
+        : !st ? `Nessuna notizia del telefono di ${code}: in barca, nel Logger, accendi "Trasmetti live" e controlla che il codice sia ${code}.`
+        : st.online === false ? `Telefono di ${code} non collegato${st.t ? ' (ultimo contatto ' + fmtAgo(st.t) + ')' : ''}.`
+        : st.rec ? `Telefono di ${code} in registrazione${st.bat != null ? ' · batteria ' + Math.round(st.bat * 100) + '%' : ''}: apri una dashboard.`
+        : `Telefono di ${code} collegato, ma non registra${age > 60000 ? ' (ultimo contatto ' + fmtAgo(st.t) + ')' : ''}: avvia la registrazione.`;
+    };
+    c.onstate = s => { conn = s; show(); };
+    c.subscribe(`n17dv/${code}/status`, (t, p) => { try { st = JSON.parse(new TextDecoder().decode(p)); } catch (e) { /* non valido */ } show(); });
+    this.pageUnDash = Dash.attach(c, code);
+    c.connect();
+    this.pageTimer = setInterval(show, 10000);
+  },
+  leavePage() {
+    if (this.pageClient) { this.pageClient.close(); this.pageClient = null; }
+    if (this.pageUnDash) { this.pageUnDash(); this.pageUnDash = null; }
+    if (this.pageListener) { Dash.listeners.delete(this.pageListener); this.pageListener = null; }
+    clearInterval(this.pageTimer);
+  },
+  newDash(code) {
+    const name = h('input', { type: 'text', class: 'full', value: 'Dashboard ' + (Dash.list().length + 1) });
+    const from = h('select', { class: 'full' }, h('option', { value: '' }, 'Vuota: aggiungo io i pannelli'), h('option', { value: '__std' }, 'Pannelli di partenza (numeri, medie, mappa, grafici)'), Dash.list().map(d => h('option', { value: d.id }, `Copia di "${d.name}"`)));
+    from.value = '__std';
+    modal({ title: 'Nuova dashboard', body: h('div', { style: { display: 'grid', gap: '12px' } }, h('label', { class: 'f' }, 'Nome', name), h('label', { class: 'f' }, 'Parti da', from),
+      h('p', { class: 'stat' }, 'Si apre con dati simulati, così puoi comporla anche a terra. Sopra scegli se stai preparando la disposizione orizzontale o verticale.')),
+      actions: [{ label: 'Annulla' }, { label: 'Crea e modifica', kind: 'primary', run: () => {
+        const src = from.value === '__std' ? { land: liveLayout() } : from.value ? Dash.get(from.value) : { land: [] };
+        const d = Dash.create(name.value.trim() || 'Dashboard', JSON.parse(JSON.stringify(src.land || [])), src.port ? JSON.parse(JSON.stringify(src.port)) : null);
+        Router.go(`#/live/${encodeURIComponent(code)}/d/${encodeURIComponent(d.id)}/modifica`);
+      } }] });
   },
 
-  /* apertura del viewer in modalità live */
-  async open(code) {
+  /* ---------- una dashboard: con i dati della barca, oppure da modificare con i dati simulati ---------- */
+  open(code, dashId, edit = false) {
     Viewer.close();
+    const dash = Dash.get(dashId);
+    if (!dash) { toast('Dashboard non trovata: forse è stata eliminata.'); Router.go('#/live'); return; }
+    LS.set('liveCode', code); LS.set('liveView', dashId);
+    const S = new LiveSession(code, LS.get('liveServer', {}));
+    S.dash = dash; S.editing = edit;
+    S.orient = edit ? LS.get('dashOrient', innerWidth >= innerHeight ? 'land' : 'port') : (innerWidth >= innerHeight ? 'land' : 'port');
+    S.meta.title = dash.name;
+    S.meta.layout = Dash.layout(dash, S.orient);
+    S.meta.view.locked = !edit;
+    if (edit) { S.sim = new LiveSim(S); S.connect({ data: false }); S.sim.start(); S.sim.step(); }
+    else S.connect();
+    S.rebuild();
     Viewer.open_ = true;
     const root = $('#view-viewer');
     root.textContent = '';
-    const S = new LiveSession(code, LS.get('liveServer', {}));
-    S.connect();
-    const wait = h('div', { class: 'loading' }, h('div', null, h('b', null, `Live · ${code}`), h('span', { id: 'liveWait' }, 'Mi collego…'),
-      h('button', { class: 'btn', onclick: () => { S.dispose(); Router.go('#/live'); } }, 'Annulla')));
-    root.append(wait);
-    S.onStatus = () => { const el = $('#liveWait'); if (el) el.textContent = this.statusInfo(S).wait; };
-    // aspetto qualche secondo di dati, così il layout nasce con i canali giusti
-    await new Promise(res => { const iv = setInterval(() => { if (!Viewer.open_ || Viewer._liveAbort) { clearInterval(iv); res(); return; } if (S.packets > 0) { const have = Object.values(S.cols).some(c => c.t.length > 1); if (have && (S.cols.heel_deg.t.length > 10 || Date.now() - S.firstPkt > 4000)) { clearInterval(iv); res(); } } if (S.packets && !S.firstPkt) S.firstPkt = Date.now(); }, 300); });
-    if (!Viewer.open_ || location.hash !== '#/live/' + encodeURIComponent(code)) { S.dispose(); return; }
-    S.rebuild();
-    wait.remove();
-    if (!S.meta.layout || !S.meta.layout.length) S.meta.layout = liveLayout(S);
     Viewer.start(S, root);
     this.bar(S);
     // ogni secondo: nuovi dati nei canali e nei grafici
+    clearInterval(this.timer);
     this.timer = setInterval(() => {
       if (!Viewer.open_ || Viewer.S !== S) { clearInterval(this.timer); return; }
       if (S.dirty) {
+        const had = S.channelMap.size;
         S.rebuild();
         for (const r of Viewer.panels.values()) if (r.inst.refreshData) { try { r.inst.refreshData(); } catch (e) { console.error(e); } }
+        if (!had && S.channelMap.size) Viewer.rebuildPanels(p => !['map', 'events'].includes(p.type)); // primi dati: i pannelli nascono con i canali giusti
         Viewer.requestDraw();
       }
       this.renderBar(S);
@@ -178,7 +284,7 @@ const Live = {
     let skew = null;
     if (S.lastMRx && S.lastGRx && Date.now() - S.lastMRx < 10000 && Date.now() - S.lastGRx < 30000) {
       const d = (S.lastGT - S.lastMT) - (S.lastGRx - S.lastMRx);
-      if (Math.abs(d) > 30000) skew = `Sbandamento e trim arrivano con l'ora sbagliata (${fmtDur(Math.abs(d))} ${d > 0 ? 'indietro' : 'avanti'} rispetto al GPS): aggiorna l'app del telefono e riavvia la registrazione.`;
+      if (Math.abs(d) > 30000) skew = `Heel e trim arrivano con l'ora sbagliata (${fmtDur(Math.abs(d))} ${d > 0 ? 'indietro' : 'avanti'} rispetto al GPS): aggiorna l'app del telefono e riavvia la registrazione.`;
     }
     return { ok: ok && !skew, fresh, txt, wait, skew, bat: st.bat != null ? Math.round(st.bat * 100) : null };
   },
@@ -188,10 +294,10 @@ const Live = {
     const info = this.statusInfo(S);
     el.textContent = '';
     el.append(...[
-      h('span', { class: 'chip', style: { background: info.ok ? 'rgba(25,158,112,.18)' : 'rgba(201,133,0,.18)' } }, h('span', { class: 'dot', style: { background: info.ok ? 'var(--good)' : 'var(--warn)' } }), `LIVE ${S.code} · ${info.txt}`),
-      info.bat != null ? h('span', { class: 'small muted' }, `batteria ${info.bat}%`) : null,
+      S.sim ? h('span', { class: 'chip sim', title: 'La barca non serve: i dati sono inventati per comporre la dashboard' }, h('span', { class: 'dot', style: { background: 'var(--accent)' } }), 'DATI SIMULATI')
+        : h('span', { class: 'chip', title: info.wait, style: { background: info.ok ? 'rgba(25,158,112,.18)' : 'rgba(201,133,0,.18)' } }, h('span', { class: 'dot', style: { background: info.ok ? 'var(--good)' : 'var(--warn)' } }), `${S.code} · ${info.txt}`),
+      info.bat != null && !S.sim ? h('span', { class: 'small muted' }, `🔋 ${info.bat}%`) : null,
       info.skew ? h('span', { class: 'small', style: { color: 'var(--warn)', fontWeight: 700 }, title: info.skew }, '⚠ ora dei sensori sfasata') : null,
-      h('button', { class: 'btn sm', title: 'Torna ai numeri grandi del Live', onclick: () => { LS.set('liveView', 'quadro'); Router.go('#/live/' + encodeURIComponent(S.code) + '/quadro'); } }, 'Live'),
       S.follow ? null : h('button', { class: 'btn sm primary', onclick: () => { S.follow = true; Viewer.requestDraw(); this.renderBar(S); } }, 'Torna all\'ultimo dato'),
       (() => {
         const open = S.meta.events.find(e => e.type === 'tratto' && e.t2 == null);
@@ -199,13 +305,14 @@ const Live = {
           ? h('button', { class: 'btn sm danger', style: { fontWeight: 700 }, title: 'Chiude il tratto e mostra il riepilogo', onclick: () => this.segmentStop(S) }, `■ Fine tratto · ${fmtDur(S.t1 - open.t)}`)
           : h('button', { class: 'btn sm primary', title: 'Da adesso parte il tratto da analizzare', onclick: () => this.segmentStart(S) }, '▶ Inizia tratto');
       })(),
-      h('button', { class: 'btn sm', title: 'Salva i dati ricevuti come uscita (o scarica il CSV)', onclick: () => this.saveAs(S) }, 'Salva')].filter(Boolean));
+      S.sim ? null : h('button', { class: 'btn sm', title: 'Salva i dati ricevuti come uscita (o scarica il CSV)', onclick: () => this.saveAs(S) }, 'Salva')].filter(Boolean));
   },
   /* tratti: l'allenatore (o il telefono) segna inizio e fine di un pezzo di allenamento */
   segmentStart(S, t = S.t1, from = 'allenatore') {
     if (S.meta.events.some(e => e.type === 'tratto' && e.t2 == null)) return;
     const n = S.meta.events.filter(e => e.type === 'tratto').length + 1;
     S.addEvent({ t: Math.round(t), t2: null, type: 'tratto', note: `Tratto ${n}`, by: from });
+    if (from !== 'telefono') S.sendCmd('s', t);
     this.changed(S);
     toast(`Tratto ${n} iniziato${from === 'telefono' ? ' dal telefono' : ''}.`, 2500);
   },
@@ -213,6 +320,7 @@ const Live = {
     const open = S.meta.events.find(e => e.type === 'tratto' && e.t2 == null);
     if (!open) return;
     open.t2 = Math.max(open.t + 1000, Math.round(t));
+    if (from !== 'telefono') S.sendCmd('f', open.t2);
     S.save(); this.changed(S);
     if (Viewer.S === S) showRangeAnalysis(Viewer, open.t, open.t2, `${open.note} · riepilogo${from === 'telefono' ? ' (chiuso dal telefono)' : ''}`);
     else if (Quadro.S === S) Quadro.summary(open);
@@ -254,7 +362,7 @@ function liveLayout(S) {
     { type: 'averages', x: 5, y: 0, w: 8, h: 13, cfg: { windows: [10, 30] } },
     { type: 'map', x: 13, y: 0, w: 11, h: 13, cfg: { follow: true, trail: 120 } },
     { type: 'chart', x: 0, y: 13, w: 8, h: 11, cfg: { title: 'Velocità', ids: has('gps_speed_kn') } },
-    { type: 'chart', x: 8, y: 13, w: 8, h: 11, cfg: { title: 'Sbandamento e trim', ids: [...has('heel_deg'), ...has('pitch_deg')] } },
+    { type: 'chart', x: 8, y: 13, w: 8, h: 11, cfg: { title: 'Heel e trim', ids: [...has('heel_deg'), ...has('pitch_deg')] } },
     { type: 'events', x: 16, y: 13, w: 8, h: 11, cfg: {} }
   ];
 }

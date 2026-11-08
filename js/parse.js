@@ -121,17 +121,17 @@ function guessRole(name, unit) {
   if (/load|carico|tension|force|forza|kg/.test(n) || /^(sensore )?\d{3,}$/.test(n) || /^(kg|kgf|daN|N|kN|lbs?)$/i.test(unit)) return 'load';
   return 'other';
 }
-const ROLE_LABEL = { time: 'Ora', hr: 'Frequenza cardiaca', lat: 'Latitudine', lon: 'Longitudine', sog: 'Velocità (SOG)', cog: 'Rotta (COG)', hdg: 'Prua (heading)', heel: 'Sbandamento', pitch: 'Beccheggio', load: 'Carico', twd: 'Direzione vento', tws: 'Intensità vento', twa: 'Angolo al vento', other: 'Altro' };
+const ROLE_LABEL = { time: 'Ora', hr: 'Frequenza cardiaca', lat: 'Latitudine', lon: 'Longitudine', sog: 'Velocità (SOG)', cog: 'Rotta (COG)', hdg: 'Prua (heading)', heel: 'Heel', pitch: 'Trim', load: 'Carico', twd: 'Direzione vento', tws: 'Intensità vento', twa: 'Angolo al vento', other: 'Altro' };
 // colonne del Registratore N17 per iPhone: [nome, unità, ruolo, usata di default]
 const PHONE_COLS = {
   lat: ['Latitudine', '°', 'lat', true], lon: ['Longitudine', '°', 'lon', true],
   gps_speed_kn: ['Velocità GPS', 'kn', 'sog', true], gps_course: ['Rotta GPS', '°', 'cog', true], gps_hacc_m: ['Precisione GPS', 'm', 'other', false], gps_alt_m: ['Quota GPS', 'm', 'other', false],
-  heel_deg: ['Sbandamento', '°', 'heel', true], pitch_deg: ['Beccheggio', '°', 'pitch', true], heading_deg: ['Prua (bussola)', '°', 'hdg', true],
-  roll_rate_dps: ['Velocità di rollio', '°/s', 'other', true], pitch_rate_dps: ['Velocità di beccheggio', '°/s', 'other', false], yaw_rate_dps: ['Velocità di rotazione', '°/s', 'other', true],
+  heel_deg: ['Heel', '°', 'heel', true], pitch_deg: ['Trim', '°', 'pitch', true], heading_deg: ['Prua (bussola)', '°', 'hdg', true],
+  roll_rate_dps: ['Velocità di rollio', '°/s', 'other', true], pitch_rate_dps: ['Velocità di trim', '°/s', 'other', false], yaw_rate_dps: ['Velocità di rotazione', '°/s', 'other', true],
   acc_surge_g: ['Accelerazione avanti', 'g', 'other', true], acc_sway_g: ['Accelerazione laterale', 'g', 'other', false], acc_heave_g: ['Accelerazione verticale', 'g', 'other', true],
   acc_peak_g: ['Picco di accelerazione', 'g', 'other', true], pressure_kpa: ['Pressione atmosferica', 'kPa', 'other', false]
 };
-const NICE_NAME = { hr: 'Frequenza cardiaca', lat: 'Latitudine', lon: 'Longitudine', sog: 'Velocità', cog: 'Rotta', hdg: 'Prua', heel: 'Sbandamento', pitch: 'Beccheggio', twd: 'Direzione vento', tws: 'Vento', twa: 'Angolo al vento' };
+const NICE_NAME = { hr: 'Frequenza cardiaca', lat: 'Latitudine', lon: 'Longitudine', sog: 'Velocità', cog: 'Rotta', hdg: 'Prua', heel: 'Heel', pitch: 'Trim', twd: 'Direzione vento', tws: 'Vento', twa: 'Angolo al vento' };
 const CIRCULAR = new Set(['cog', 'hdg', 'twd']);
 const EXCLUDE_RE = /^(id|#|n\.?|no\.?|index|indice|sample|campione|seq)$/i;
 
@@ -270,7 +270,11 @@ function makeChannel(o) {
   for (let i = 0; i < n; i++) { const x = v[i]; if (x < mn) mn = x; if (x > mx) mx = x; if (ints && Math.abs(x - Math.round(x)) > 1e-9) ints = false; }
   const big = Math.max(Math.abs(mn), Math.abs(mx));
   const dec = o.dec != null ? o.dec : CIRCULAR.has(o.role) ? 0 : ints ? 0 : big >= 100 ? 0 : big >= 10 ? 1 : 2;
-  return Object.assign({ circular: CIRCULAR.has(o.role), step, gap: Math.max(2500, step * 3), min: mn, max: mx, dec }, o);
+  return Object.assign({ circular: CIRCULAR.has(o.role), step, gap: Math.max(2500, step * 3), min: mn, max: mx, dec }, o, { name: modernName(o.name) });
+}
+/* nomi di prima (nelle uscite già salvate e nei modelli): sbandamento e beccheggio ora si chiamano Heel e Trim */
+function modernName(n) {
+  return typeof n !== 'string' ? n : n.replace(/^Sbandamento\b/, 'Heel').replace(/^Beccheggio\b/, 'Trim').replace(/^Velocità di beccheggio\b/, 'Velocità di trim');
 }
 
 /* ---------- GPX ---------- */

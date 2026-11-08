@@ -1,5 +1,5 @@
 /* Quadro live per il tablet (gommone o terra): pochi riquadri, numeri grandi, divisi per tipo.
-   - Stato barca: sbandamento e trim
+   - Stato barca: heel e trim
    - Conduzione: velocità, rotta (COG) e timone (dalla rotazione della barca)
    Ogni riquadro: valore di adesso, andamento dell'ultimo minuto, medie su 10 s e 30 s (e del tratto in corso).
    Si ricalcola una volta al secondo: valori stabili e leggibili. */
@@ -49,7 +49,7 @@ const Quadro = {
       return t;
     };
     this.tiles = {
-      heel: tile('heel', 'Sbandamento', '+ = sbandata a dritta'),
+      heel: tile('heel', 'Heel', '+ = sbandata a dritta'),
       pitch: tile('pitch', 'Trim', '+ = prua in alto'),
       sog: tile('sog', 'Velocità', 'GPS del telefono'),
       cog: tile('cog', 'Rotta (COG)', 'quanto varia la rotta'),

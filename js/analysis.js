@@ -79,9 +79,9 @@ const STAT_ROWS = [
   ['Velocità massima', r => r.sog && fmtNum(r.sog.max, 1), 'kn', r => r.sog && r.sog.cov],
   ['Stabilità velocità (dev. std)', r => r.sog && fmtNum(r.sog.sd, 2), 'kn', r => r.sog && r.sog.cov],
   ['Distanza', r => r.sog && fmtNum(r.sog.dist * 1852, 0), 'm', r => r.sog && r.sog.cov],
-  ['Sbandamento medio', r => r.heel && fmtNum(r.heel.mean, 1), '°', r => r.heel && r.heel.cov],
-  ['Sbandamento: ampiezza', r => r.heel && fmtNum(r.heel.range, 1), '°', r => r.heel && r.heel.cov],
-  ['Sbandamento: oscillazioni', r => r.heel && fmtNum(r.heel.osc, 0), '/min', r => r.heel && r.heel.cov],
+  ['Heel medio', r => r.heel && fmtNum(r.heel.mean, 1), '°', r => r.heel && r.heel.cov],
+  ['Heel: ampiezza', r => r.heel && fmtNum(r.heel.range, 1), '°', r => r.heel && r.heel.cov],
+  ['Heel: oscillazioni', r => r.heel && fmtNum(r.heel.osc, 0), '/min', r => r.heel && r.heel.cov],
   ['Trim medio', r => r.pitch && fmtNum(r.pitch.mean, 1), '°', r => r.pitch && r.pitch.cov],
   ['Trim: ampiezza', r => r.pitch && fmtNum(r.pitch.range, 1), '°', r => r.pitch && r.pitch.cov],
   ['Trim: oscillazioni', r => r.pitch && fmtNum(r.pitch.osc, 0), '/min', r => r.pitch && r.pitch.cov],
@@ -270,7 +270,7 @@ function segmentSummary(S, a, b) {
     const sp = M.heelSide, w = M.heelW;
     const big = sp && sp.both ? f((Math.abs(sp.pos) + Math.abs(sp.neg)) / 2, 1) : f(Math.abs(r.heel.mean), 1);
     const side = sp && sp.both ? `a dritta ${f(sp.pos, 1)}° · a sinistra ${f(Math.abs(sp.neg), 1)}° (con virate)` : Math.abs(r.heel.mean) < 0.5 ? 'barca piatta' : r.heel.mean > 0 ? 'sbandata a dritta' : 'sbandata a sinistra';
-    return tile('Sbandamento medio', big, '°', [side, w && `oscilla di ± ${f(w.sd, 1)}°, ${times(w.perMin)}`], cmp(w?.sd, P?.heelW?.sd, 1, '° di oscillazione', false), good(r.heel.cov));
+    return tile('Heel medio', big, '°', [side, w && `oscilla di ± ${f(w.sd, 1)}°, ${times(w.perMin)}`], cmp(w?.sd, P?.heelW?.sd, 1, '° di oscillazione', false), good(r.heel.cov));
   };
   const pitchTile = () => {
     if (!r.pitch) return null;

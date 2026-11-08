@@ -39,9 +39,10 @@ function channelPicker(S, selected, opts = {}) {
     for (const c of list) {
       const cb = h('input', { type: opts.single ? 'radio' : 'checkbox', name: 'chp', checked: sel.includes(c.id) });
       cb.addEventListener('change', () => {
-        if (opts.single) { sel.length = 0; sel.push(c.id); return; }
+        if (opts.single) { sel.length = 0; sel.push(c.id); opts.onChange && opts.onChange(); return; }
         const i = sel.indexOf(c.id);
         if (cb.checked && i < 0) sel.push(c.id); else if (!cb.checked && i >= 0) sel.splice(i, 1);
+        opts.onChange && opts.onChange();
       });
       box.append(h('label', null, cb, c.name, h('span', { class: 'faint small' }, c.unit ? ` ${c.unit}` : '')));
     }
@@ -253,19 +254,20 @@ class ChartPanel {
       this.el.append(h('div', { class: 'pnl-empty' }, h('div', null, 'Scegli cosa mostrare in questo grafico.', h('button', { class: 'btn sm', onclick: () => this.V.panelSettings(this) }, 'Scegli i canali'))));
       return;
     }
-    // una fascia per unità di misura: mai due assi Y sullo stesso grafico
-    const groups = new Map();
-    for (const c of chans) { const k = c.circular ? '°dir' : (c.unit || '-'); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(c); }
-    let ci = 0;
-    for (const [unit, list] of groups) {
-      const lane = { unit, list, colors: list.map(() => seriesColor(ci++)) };
+    // più grafici nello stesso pannello: di solito uno per unità di misura (un solo asse Y per grafico),
+    // ma ogni linea si può mettere nel grafico che si vuole
+    const groups = this.groupLanes(chans);
+    for (const [key, list] of groups) {
+      const lane = { key, unit: key, circ: list.every(c => c.circular), list, colors: list.map(c => this.styleOf(c).color || seriesColor(chans.indexOf(c))), dashes: list.map(c => this.styleOf(c).dash || 'solid') };
       lane.el = h('div', { class: 'lane' });
       lane.legend = h('div', { class: 'lane-legend', style: { fontSize: `${Math.round(11 * (this.sz || 1))}px` } });
       lane.plot = h('div', { class: 'lane-plot' });
       lane.el.append(lane.legend, lane.plot);
       this.el.append(lane.el);
       lane.items = list.map((c, i) => {
-        const val = h('b'); const sp = h('span', { title: c.srcName }, h('i', { style: { background: lane.colors[i] } }), h('em', null, c.name), val, c.unit ? h('em', null, c.unit) : null);
+        const col = lane.colors[i], d = lane.dashes[i];
+        const sw = d === 'solid' ? col : `repeating-linear-gradient(90deg, ${col} 0 ${d === 'dot' ? 2 : 5}px, transparent ${d === 'dot' ? 2 : 5}px ${d === 'dot' ? 4 : 8}px)`;
+        const val = h('b'); const sp = h('span', { title: c.srcName }, h('i', { style: { background: sw } }), h('em', null, c.name), val, c.unit ? h('em', null, c.unit) : null);
         sp.onclick = () => { const s = lane.u.series[i + 1]; lane.u.setSeries(i + 1, { show: !s.show }); sp.classList.toggle('off', !s.show); };
         lane.legend.append(sp);
         return { c, val, last: '' };
@@ -275,16 +277,19 @@ class ChartPanel {
     requestAnimationFrame(() => this.makePlots());
   }
   laneData(lane) {
-    const S = this.S, span = Math.max(1000, S.t1 - S.t0);
+    const S = this.S;
+    // nel live: solo l'ultima mezz'ora (o tre finestre del grafico), così dopo ore di dati l'iPad resta veloce
+    const a = S.live ? Math.max(S.t0, S.t1 - Math.max(1800e3, 3 * (this.win() || 0))) : S.t0;
+    const span = Math.max(1000, S.t1 - a);
     const minStep = Math.min(...lane.list.map(c => c.step));
     const step = Math.max(minStep, span / 150000, 20);
     const n = Math.max(2, Math.floor(span / step) + 1);
     const xs = new Float64Array(n);
-    for (let k = 0; k < n; k++) xs[k] = (S.t0 + k * step) / 1000;
-    const ys = lane.list.map(c => { const r = resample(c, S.t0, step, n); const a = new Array(n); for (let k = 0; k < n; k++) a[k] = isFinite(r[k]) ? r[k] : null; return a; });
+    for (let k = 0; k < n; k++) xs[k] = (a + k * step) / 1000;
+    const ys = lane.list.map(c => { const r = resample(c, a, step, n), y = new Array(n); for (let k = 0; k < n; k++) y[k] = isFinite(r[k]) ? r[k] : null; return y; });
     let mn = Infinity, mx = -Infinity;
     for (const c of lane.list) { mn = Math.min(mn, c.min); mx = Math.max(mx, c.max); }
-    if (lane.unit === '°dir') { mn = 0; mx = 360; }
+    if (lane.circ) { mn = 0; mx = 360; }
     else { const pad = (mx - mn) * 0.06 || 1; mn -= pad; mx += pad; if (lane.list.every(c => c.min >= 0) && mn < 0) mn = 0; }
     return { data: [xs, ...ys], fixed: [mn, mx] };
   }
@@ -313,14 +318,14 @@ class ChartPanel {
         legend: { show: false }, padding: [6, 8, 0, 0],
         cursor: { y: false, points: { show: false }, drag: { x: false, y: false, setScale: false } },
         scales: { x: { time: true }, y: { range: (u, a, b) => {
-          const fix = this.cfg.yMode === 'manual' && this.cfg.yFix && this.cfg.yFix[lane.unit];
-          if (fix && isFinite(fix[0]) && isFinite(fix[1]) && fix[1] > fix[0]) return [fix[0], fix[1]];
-          return this.cfg.yMode === 'window' && lane.unit !== '°dir' ? autoRange(a, b) : lane.fixed; } } },
+          const L = this.laneY(lane.key);
+          if (L.mode === 'manual' && isFinite(L.min) && isFinite(L.max) && L.max > L.min) return [L.min, L.max];
+          return L.mode === 'window' && !lane.circ ? autoRange(a, b) : lane.fixed; } } },
         axes: [
           { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, size: 4 }, size: Math.round(24 * sz), space: Math.round(90 * sz), font: fpx + 'px ' + cs.getPropertyValue('--font'), values: (u, sp) => sp.map(s => { const d = new Date(s * 1000); const w = u.scales.x.max - u.scales.x.min; return w > 900 ? `${p2(d.getHours())}:${p2(d.getMinutes())}` : `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; }) },
           { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, size: Math.round(42 * sz), space: Math.round(28 * sz), font: fpx + 'px ' + cs.getPropertyValue('--font'), values: (u, sp) => sp.map(v => fmtNum(v, Math.abs(sp[1] - sp[0]) < 1 ? 1 : 0)) }
         ],
-        series: [{}, ...lane.list.map((c, i) => ({ label: c.name, stroke: lane.colors[i], width: this.cfg.lw || 1.6, points: { show: false }, spanGaps: false }))],
+        series: [{}, ...lane.list.map((c, i) => ({ label: c.name, stroke: lane.colors[i], width: (this.styleOf(c).lw || this.cfg.lw || 1.6) * sz ** 0.5, dash: CHART_DASH[lane.dashes[i]], points: { show: false }, spanGaps: false }))],
         hooks: { draw: [u => self.drawOverlay(u)], setCursor: [u => self.hover(u, lane)] }
       };
       lane.u = new uPlot(opts, [xs, ...ys], lane.plot);
@@ -335,20 +340,21 @@ class ChartPanel {
     const over = lane.u.over;
     let down = null;
     const tAt = e => { const r = over.getBoundingClientRect(); return lane.u.posToVal(e.clientX - r.left, 'x') * 1000; };
-    over.addEventListener('mousedown', e => {
+    over.style.touchAction = 'none'; // col dito: trascinare scorre il tempo, non la pagina
+    over.addEventListener('pointerdown', e => {
       if (e.button !== 0) return;
       // Maiusc + trascina = seleziono un tratto da analizzare
       if (e.shiftKey) { down = { sel: true, a: tAt(e) }; this.V.inT = down.a; this.V.outT = null; this.V.requestDraw(); e.preventDefault(); return; }
       down = { x: e.clientX, t: this.V.t, moved: false }; this.V.scrubbing = true; e.preventDefault();
     });
-    window.addEventListener('mousemove', this._mm = e => {
+    window.addEventListener('pointermove', this._mm = e => {
       if (!down) return;
       if (down.sel) { const b = tAt(e); this.V.inT = Math.min(down.a, b); this.V.outT = Math.max(down.a, b); this.V.requestDraw(); return; }
       const dx = e.clientX - down.x;
       if (Math.abs(dx) > 3) down.moved = true;
       if (down.moved) { const u = lane.u, w = (u.scales.x.max - u.scales.x.min) * 1000; this.V.seek(down.t - dx / u.over.clientWidth * w); }
     });
-    window.addEventListener('mouseup', this._mu = e => {
+    window.addEventListener('pointerup', this._mu = e => {
       if (!down) return;
       if (down.sel) {
         const a = this.V.inT, b = this.V.outT; down = null;
@@ -439,30 +445,88 @@ class ChartPanel {
     for (const lane of this.lanes) if (lane.u) { const r = lane.plot.getBoundingClientRect(); lane.u.setSize({ width: Math.max(50, r.width), height: Math.max(40, r.height) }); }
     this.lastKey = '';
   }
+  styleOf(c) { return (this.cfg.st || {})[c.id] || {}; }
+  /* in quale grafico va ogni linea: quello scelto, altrimenti uno per unità di misura */
+  groupLanes(chans, st = this.cfg.st || {}) {
+    const groups = new Map();
+    for (const c of chans) {
+      const L = st[c.id] && st[c.id].lane;
+      const k = L ? 'L' + L : c.circular ? '°dir' : (c.unit || '-');
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(c);
+    }
+    return groups;
+  }
+  /* scala verticale di un grafico (compatibile con le impostazioni di prima, per unità di misura) */
+  laneY(key, lanes = this.cfg.lanes || {}) {
+    const L = lanes[key];
+    if (L) return L;
+    const f = (this.cfg.yFix || {})[key];
+    return { mode: this.cfg.yMode || 'session', min: f ? f[0] : null, max: f ? f[1] : null };
+  }
   settings() {
-    const pick = channelPicker(this.S, this.cfg.ids);
-    const title = h('input', { type: 'text', class: 'full', value: this.cfg.title || '', placeholder: 'Grafico' });
-    // scala verticale a mano: un minimo e un massimo per ogni fascia (unità di misura) del grafico
-    const units = [...new Set(this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean).map(c => c.circular ? '°dir' : (c.unit || '-')))].filter(u => u !== '°dir');
-    const fixIn = units.map(u => { const f = (this.cfg.yFix || {})[u] || []; const lane = this.lanes.find(l => l.unit === u); const ph = lane && lane.fixed ? lane.fixed : [];
-      return { u, lo: h('input', { type: 'number', step: 'any', value: f[0] ?? '', placeholder: ph[0] != null ? fmtNum(ph[0], 1) : 'min', style: { width: '90px' } }), hi: h('input', { type: 'number', step: 'any', value: f[1] ?? '', placeholder: ph[1] != null ? fmtNum(ph[1], 1) : 'max', style: { width: '90px' } }) }; });
-    const fixBox = h('div', { class: 'f', hidden: (this.cfg.yMode || 'session') !== 'manual' }, 'Scala a mano (vuoto = automatica)',
-      units.length ? fixIn.map(f => h('div', { class: 'row', style: { gap: '8px', fontWeight: 500 } }, h('span', { style: { minWidth: '70px' } }, f.u === '-' ? 'senza unità' : f.u), 'da', f.lo, 'a', f.hi)) : h('span', { class: 'muted' }, 'Scegli prima i canali e riapri le impostazioni.'));
-    const ym = h('div', { class: 'seg' }, [['session', 'Tutta l\'uscita'], ['window', 'Adatta alla finestra'], ['manual', 'A mano']].map(([v, l]) => h('button', { class: (this.cfg.yMode || 'session') === v ? 'on' : '', onclick: e => { ym.querySelectorAll('button').forEach(b => b.classList.remove('on')); e.target.classList.add('on'); ym.dataset.v = v; fixBox.hidden = v !== 'manual'; } }, l)));
-    ym.dataset.v = this.cfg.yMode || 'session';
-    const lw = h('select', null, [[1, 'sottili'], [1.6, 'normali'], [2.5, 'spesse'], [3.5, 'molto spesse']].map(([v, l]) => h('option', { value: v, selected: (this.cfg.lw || 1.6) === v }, l)));
+    const S = this.S, cfg = this.cfg;
+    const st = JSON.parse(JSON.stringify(cfg.st || {})), lanesCfg = {};
+    const title = h('input', { type: 'text', class: 'full', value: cfg.title || '', placeholder: 'Grafico' });
+    const lw = h('select', null, [[1, 'sottili'], [1.6, 'normali'], [2.5, 'spesse'], [3.5, 'molto spesse']].map(([v, l]) => h('option', { value: v, selected: (cfg.lw || 1.6) === v }, l)));
+    const serBox = h('div'), yBox = h('div', { style: { display: 'grid', gap: '8px' } });
+    let pick;
+    const laneName = (k, list) => k.startsWith('L') ? `Grafico ${k.slice(1)}` : k === '°dir' ? 'Direzioni (0–360°)' : `Grafico in ${k === '-' ? 'numeri senza unità' : k}`;
+    const drawY = () => {
+      const chans = pick.get().map(id => S.ch(id)).filter(Boolean);
+      yBox.textContent = '';
+      for (const [key, list] of this.groupLanes(chans, st)) {
+        const L = lanesCfg[key] || (lanesCfg[key] = Object.assign({}, this.laneY(key)));
+        const lane = this.lanes.find(l => l.key === key), ph = lane && lane.fixed ? lane.fixed : [];
+        const mn = h('input', { type: 'number', step: 'any', value: L.min ?? '', placeholder: ph[0] != null ? fmtNum(ph[0], 1) : 'min', style: { width: '80px' }, oninput: e => { L.min = e.target.value === '' ? null : Number(e.target.value); } });
+        const mx = h('input', { type: 'number', step: 'any', value: L.max ?? '', placeholder: ph[1] != null ? fmtNum(ph[1], 1) : 'max', style: { width: '80px' }, oninput: e => { L.max = e.target.value === '' ? null : Number(e.target.value); } });
+        const man = h('span', { class: 'row', style: { gap: '6px' }, hidden: L.mode !== 'manual' }, 'da', mn, 'a', mx);
+        const mode = h('select', { onchange: e => { L.mode = e.target.value; man.hidden = L.mode !== 'manual'; } }, [['session', 'tutta l\'uscita'], ['window', 'adatta alla finestra'], ['manual', 'a mano']].map(([v, l]) => h('option', { value: v, selected: L.mode === v }, l)));
+        yBox.append(h('div', { class: 'row', style: { gap: '8px', fontSize: '13px' } }, h('b', { style: { minWidth: '150px' } }, laneName(key, list)), h('span', { class: 'faint small', style: { minWidth: '120px' } }, list.map(c => c.name).join(', ')), mode, man));
+      }
+      if (!yBox.children.length) yBox.append(h('span', { class: 'muted small' }, 'Scegli prima le linee qui sotto.'));
+    };
+    const draw = () => {
+      const chans = pick.get().map(id => S.ch(id)).filter(Boolean);
+      serBox.textContent = '';
+      if (!chans.length) { serBox.append(h('span', { class: 'muted small' }, 'Scegli le grandezze nell\'elenco qui sotto.')); drawY(); return; }
+      const tb = h('table', { class: 'ev-table ser-table' }, h('thead', null, h('tr', null, ['Linea', 'In quale grafico', 'Colore', 'Tratto', 'Spessore'].map(x => h('th', null, x)))));
+      const body = h('tbody');
+      const all = cfg.ids.map(id => S.ch(id)).filter(Boolean);
+      chans.forEach(c => {
+        const o = st[c.id] || (st[c.id] = {});
+        const idx = all.includes(c) ? all.indexOf(c) : chans.indexOf(c);
+        const lane = h('select', { onchange: e => { o.lane = e.target.value ? Number(e.target.value) : null; drawY(); } }, [['', 'automatico (per unità)'], [1, 'Grafico 1'], [2, 'Grafico 2'], [3, 'Grafico 3'], [4, 'Grafico 4']].map(([v, l]) => h('option', { value: v, selected: String(o.lane || '') === String(v) }, l)));
+        const color = h('input', { type: 'color', value: o.color || seriesColor(idx), oninput: e => { o.color = e.target.value; } });
+        const dash = h('select', { onchange: e => { o.dash = e.target.value; } }, [['solid', 'continua'], ['dash', 'tratteggiata'], ['dot', 'a puntini']].map(([v, l]) => h('option', { value: v, selected: (o.dash || 'solid') === v }, l)));
+        const w = h('select', { onchange: e => { o.lw = e.target.value ? Number(e.target.value) : null; } }, [['', 'come le altre'], [1, 'sottile'], [1.6, 'normale'], [2.5, 'spessa'], [3.5, 'molto spessa']].map(([v, l]) => h('option', { value: v, selected: String(o.lw || '') === String(v) }, l)));
+        body.append(h('tr', null, h('td', null, c.name, h('span', { class: 'faint' }, c.unit ? ` ${c.unit}` : '')), h('td', null, lane), h('td', null, color, o.color ? h('button', { class: 'icon-btn x', title: 'Colore automatico', onclick: e => { delete o.color; color.value = seriesColor(idx); e.preventDefault(); } }, '↺') : null), h('td', null, dash), h('td', null, w)));
+      });
+      tb.append(body); serBox.append(tb);
+      drawY();
+    };
+    pick = channelPicker(S, cfg.ids, { onChange: draw });
+    draw();
     return {
-      el: h('div', { style: { display: 'grid', gap: '12px' } }, h('label', { class: 'f' }, 'Titolo', title), h('div', { class: 'f' }, 'Asse verticale', ym), fixBox, h('label', { class: 'f' }, 'Linee', lw), h('div', { class: 'f' }, 'Canali (grandezze con unità diverse vanno in fasce separate)', pick.el)),
+      el: h('div', { style: { display: 'grid', gap: '14px' } },
+        h('div', { class: 'row', style: { gap: '18px' } }, h('label', { class: 'f', style: { flex: 1 } }, 'Titolo', title), h('label', { class: 'f' }, 'Linee', lw)),
+        h('div', { class: 'f' }, 'Linee: grafico, colore e tratto', serBox),
+        h('div', { class: 'f' }, 'Scala verticale di ogni grafico', yBox),
+        h('div', { class: 'f' }, 'Grandezze da mostrare (di solito un grafico per unità di misura; nella tabella sopra puoi metterle dove vuoi)', pick.el)),
       apply: () => {
-        this.cfg.ids = pick.get(); this.cfg.title = title.value.trim(); this.cfg.yMode = ym.dataset.v; this.cfg.lw = Number(lw.value);
-        const fx = {}; for (const f of fixIn) { const a = parseFloat(f.lo.value), b = parseFloat(f.hi.value); if (isFinite(a) && isFinite(b) && b > a) fx[f.u] = [a, b]; }
-        this.cfg.yFix = fx;
+        cfg.ids = pick.get(); cfg.title = title.value.trim(); cfg.lw = Number(lw.value);
+        const keep = {}; for (const id of cfg.ids) if (st[id] && Object.values(st[id]).some(v => v != null)) keep[id] = st[id];
+        cfg.st = keep;
+        const used = new Set([...this.groupLanes(cfg.ids.map(id => S.ch(id)).filter(Boolean), keep).keys()]);
+        cfg.lanes = Object.fromEntries(Object.entries(lanesCfg).filter(([k]) => used.has(k)));
+        delete cfg.yMode; delete cfg.yFix;
         this.build();
       }
     };
   }
-  destroy() { for (const l of this.lanes) l.u && l.u.destroy(); window.removeEventListener('mousemove', this._mm); window.removeEventListener('mouseup', this._mu); }
+  destroy() { for (const l of this.lanes) l.u && l.u.destroy(); window.removeEventListener('pointermove', this._mm); window.removeEventListener('pointerup', this._mu); }
 }
+const CHART_DASH = { solid: undefined, dash: [8, 5], dot: [2, 4] };
 function autoRange(a, b) { if (a == null || b == null) return [0, 1]; const p = (b - a) * 0.08 || 1; return [a - p, b + p]; }
 
 /* =================== MAPPA =================== */
@@ -612,7 +676,7 @@ class MapPanel {
     return { el: h('div', { style: { display: 'grid', gap: '12px' } }, h('label', { class: 'f' }, 'Colora la traccia secondo', sel), h('label', { class: 'f' }, 'Scia dietro la barca (secondi)', tr)),
       apply: () => { this.cfg.colorBy = sel.value || null; this.cfg.trail = Number(tr.value) || 0; if (this.map) this.drawTrack(); } };
   }
-  destroy() { if (this.map) this.map.remove(); }
+  destroy() { if (this.map) { this.map.remove(); this.map = null; } }
 }
 
 /* =================== NUMERI =================== */
@@ -637,6 +701,7 @@ class NumbersPanel {
     this.el.classList.toggle('align-c', this.cfg.align === 'center');
     this.tiles = [];
     const chans = this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean);
+    if (!chans.length && this.S.live && this.cfg.ids.length) { this.el.append(h('div', { class: 'pnl-empty', style: { background: 'var(--surface)' } }, 'In attesa dei dati dal telefono…')); return; }
     if (!chans.length) { this.el.append(h('div', { class: 'pnl-empty', style: { background: 'var(--surface)' } }, h('div', null, 'Scegli le grandezze da mostrare.', h('button', { class: 'btn sm', onclick: () => this.V.panelSettings(this) }, 'Scegli i canali')))); return; }
     for (const c of chans) {
       const val = h('span'), unit = h('small', null, c.circular ? '' : c.unit), avg = h('span'), rng = h('span'), bar = h('i');
@@ -893,3 +958,160 @@ class CoveragePanel {
 }
 PANEL_TYPES.coverage = { label: 'Copertura video e dati', icon: '▤' };
 PANEL_CLASSES.coverage = CoveragePanel;
+
+/* =================== BARRA =================== */
+/* Una barra per grandezza (heel, trim, velocità…): orizzontale o verticale, dal centro o dal minimo,
+   con una zona obiettivo; dentro la zona la barra diventa verde. Colori, spessore e scala si scelgono. */
+class BarPanel {
+  constructor(V, cfg) {
+    this.V = V; this.cfg = cfg; this.S = V.S;
+    cfg.ids = (cfg.ids || []).filter(id => this.S.live || this.S.byId.has(id));
+    if (cfg.orient == null) cfg.orient = 'h';
+    if (cfg.damp == null) cfg.damp = 1;
+    if (cfg.thick == null) cfg.thick = 0.5;
+    if (cfg.showVal == null) cfg.showVal = true;
+    if (cfg.showScale == null) cfg.showScale = true;
+    if (cfg.zoneTint == null) cfg.zoneTint = true;
+    this.sz = 1;
+    this.el = h('div', { class: 'bar-box' });
+    this.build();
+  }
+  title() { return this.cfg.title || (this.units && this.units.length === 1 ? this.units[0].c.name : 'Barre'); }
+  setSize(s) { this.sz = s; this.lastKey = ''; }
+  build() {
+    this.el.textContent = '';
+    this.el.classList.toggle('v', this.cfg.orient === 'v');
+    const chans = this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean);
+    this.units = chans.map(c => { const cv = h('canvas'); this.el.append(cv); return { c, cv }; });
+    if (!chans.length) this.el.append(h('div', { class: 'pnl-empty' }, this.S.live && this.cfg.ids.length ? 'In attesa di questi dati dal telefono…' : h('div', null, 'Scegli la grandezza da mostrare.', h('button', { class: 'btn sm', onclick: () => this.V.panelSettings(this) }, 'Scegli'))));
+    this.lastKey = '';
+  }
+  refreshData() { const have = (this.units || []).map(u => u.c.id).join(), want = this.cfg.ids.filter(id => this.S.byId.has(id)).join(); if (have !== want) { this.build(); if (this._rec) this._rec.ttl.textContent = this.title(); } }
+  /* scala: quella scelta, altrimenti simmetrica per gli angoli di assetto e da zero per il resto */
+  range(c) {
+    const lo = parseFloat(this.cfg.min), hi = parseFloat(this.cfg.max);
+    if (isFinite(lo) && isFinite(hi) && hi > lo) return [lo, hi];
+    const nice = x => { const m = Math.pow(10, Math.floor(Math.log10(Math.max(1e-9, x)))); return [1, 2, 2.5, 5, 10].map(k => k * m).find(k => k >= x) || 10 * m; };
+    if (c.role === 'heel' || c.role === 'pitch' || this.center(c)) { const a = nice(Math.max(c.role === 'pitch' ? 5 : 10, Math.abs(c.min), Math.abs(c.max))); return [-a, a]; }
+    return [Math.min(0, c.min), nice(Math.max(1, c.max))];
+  }
+  center(c) { return this.cfg.center != null ? this.cfg.center : (c.role === 'heel' || c.role === 'pitch'); }
+  update(t) {
+    const now = performance.now();
+    if (now - (this._lw || 0) < 100 && this._lt != null && Math.abs(t - this._lt) < 2000) return; // 10 volte al secondo
+    this._lw = now; this._lt = t;
+    for (const u of this.units || []) this.draw(u, dampedValue(u.c, t, this.cfg.damp, false));
+  }
+  draw(u, v) {
+    const cv = u.cv, dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+    if (!W || !H) return;
+    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+    const css = getComputedStyle(document.documentElement), col = k => css.getPropertyValue(k).trim(), font = col('--font');
+    const c = u.c, cfg = this.cfg, [lo, hi] = this.range(c), horiz = cfg.orient !== 'v';
+    const base = this.center(c) ? clamp(0, lo, hi) : lo;
+    const zone = isFinite(parseFloat(cfg.zLo)) && isFinite(parseFloat(cfg.zHi)) ? [Math.min(+cfg.zLo, +cfg.zHi), Math.max(+cfg.zLo, +cfg.zHi)] : null;
+    const inZone = zone && isFinite(v) && v >= zone[0] && v <= zone[1];
+    const barCol = inZone && cfg.zoneTint ? col('--good') : (cfg.color || col('--accent'));
+    const fs = clamp(Math.min(W, H) * (horiz ? 0.13 : 0.09), 10, 22) * this.sz;
+    const valTxt = isFinite(v) ? fmtNum(v, c.circular ? 0 : (c.dec ?? 1)) + (c.circular ? '°' : c.unit ? ' ' + c.unit : '') : '—';
+    // testo in alto: nome e valore
+    g.textBaseline = 'alphabetic';
+    // nome (se serve) e numero: in orizzontale sulla stessa riga, in verticale uno sotto l'altro
+    const label = this.units.length > 1 || cfg.title;
+    let headH = fs * 0.6;
+    g.fillStyle = col('--muted'); g.font = `600 ${Math.round(fs * 0.8)}px ${font}`; g.textAlign = 'left';
+    if (label) { g.fillText(c.name, 2, fs * 0.9); headH = horiz && cfg.showVal ? fs * 0.6 : fs * 1.35; }
+    if (cfg.showVal) {
+      const vs = horiz ? fs * 1.7 : Math.min(fs * 1.7, W / Math.max(4, valTxt.length) * 1.7);
+      g.fillStyle = col('--fg'); g.font = `800 ${Math.round(vs)}px ${font}`; g.textAlign = horiz ? 'right' : 'left';
+      g.fillText(valTxt, horiz ? W - 2 : 2, headH + vs * 0.85);
+      headH += vs * 1.1;
+    }
+    const scaleS = cfg.showScale ? fs * 1.3 : 0;
+    const area = horiz ? { x: 6, y: headH, w: W - 12, h: H - headH - scaleS } : { x: scaleS + 4, y: headH + 2, w: W - scaleS - 8, h: H - headH - 8 };
+    if (area.w < 8 || area.h < 8) return;
+    const th = clamp(cfg.thick, 0.1, 1);
+    const track = horiz ? { x: area.x, y: area.y + area.h * (1 - th) / 2, w: area.w, h: area.h * th } : { x: area.x + area.w * (1 - th) / 2, y: area.y, w: area.w * th, h: area.h };
+    const f = x => { let p = (clamp(x, lo, hi) - lo) / (hi - lo); if (cfg.reverse) p = 1 - p; return p; };
+    const P = x => horiz ? track.x + f(x) * track.w : track.y + track.h - f(x) * track.h;
+    const rr = (x, y, w, hh, r) => { g.beginPath(); if (g.roundRect) g.roundRect(x, y, w, hh, Math.min(r, w / 2, hh / 2)); else g.rect(x, y, w, hh); };
+    // binario
+    g.fillStyle = col('--surface-3'); rr(track.x, track.y, track.w, track.h, 6); g.fill();
+    // zona obiettivo
+    if (zone) {
+      g.fillStyle = cfg.zoneColor || col('--good'); g.globalAlpha = 0.28;
+      const a = P(zone[0]), b = P(zone[1]);
+      if (horiz) g.fillRect(Math.min(a, b), track.y, Math.abs(b - a), track.h); else g.fillRect(track.x, Math.min(a, b), track.w, Math.abs(b - a));
+      g.globalAlpha = 1;
+    }
+    // barra dal centro (o dal minimo) al valore
+    if (isFinite(v)) {
+      const a = P(base), b = P(v);
+      g.fillStyle = barCol;
+      if (horiz) rr(Math.min(a, b), track.y + track.h * 0.12, Math.max(2, Math.abs(b - a)), track.h * 0.76, 4);
+      else rr(track.x + track.w * 0.12, Math.min(a, b), track.w * 0.76, Math.max(2, Math.abs(b - a)), 4);
+      g.fill();
+      // tacca del valore
+      g.fillStyle = col('--fg');
+      if (horiz) g.fillRect(b - 1.5, track.y - 3, 3, track.h + 6); else g.fillRect(track.x - 3, b - 1.5, track.w + 6, 3);
+    }
+    // bordi della zona obiettivo, sopra la barra: si vedono sempre
+    if (zone) {
+      g.fillStyle = cfg.zoneColor || col('--good');
+      for (const z of zone) { const p = P(z); if (horiz) g.fillRect(p - 1.5, track.y - 5, 3, track.h + 10); else g.fillRect(track.x - 5, p - 1.5, track.w + 10, 3); }
+    }
+    // zero
+    if (lo < 0 && hi > 0) { g.fillStyle = col('--line-2'); const z = P(0); if (horiz) g.fillRect(z - 1, track.y, 2, track.h); else g.fillRect(track.x, z - 1, track.w, 2); }
+    // scala
+    if (cfg.showScale) {
+      const span = hi - lo, raw = span / Math.max(2, Math.floor((horiz ? track.w : track.h) / (fs * 3.2)));
+      const m = Math.pow(10, Math.floor(Math.log10(raw))), step = [1, 2, 2.5, 5, 10].map(k => k * m).find(k => k >= raw) || raw;
+      g.fillStyle = col('--faint'); g.font = `500 ${Math.round(fs * 0.7)}px ${font}`; g.textAlign = horiz ? 'center' : 'right'; g.textBaseline = horiz ? 'top' : 'middle';
+      for (let x = Math.ceil(lo / step) * step; x <= hi + 1e-9; x += step) {
+        const p = P(x), lab = fmtNum(x, step < 1 ? 1 : 0);
+        if (horiz) { g.fillRect(p - 0.5, track.y + track.h, 1, 4); g.fillText(lab, p, track.y + track.h + 5); }
+        else { g.fillRect(track.x - 4, p - 0.5, 4, 1); g.fillText(lab, track.x - 6, p); }
+      }
+    }
+  }
+  resize() { this._lw = 0; }
+  settings() {
+    const pick = channelPicker(this.S, this.cfg.ids);
+    const cfg = this.cfg, num = (v, ph) => h('input', { type: 'number', step: 'any', value: v ?? '', placeholder: ph, style: { width: '90px' } });
+    const orient = h('div', { class: 'seg' }, [['h', 'Orizzontale'], ['v', 'Verticale']].map(([v, l]) => h('button', { class: cfg.orient === v ? 'on' : '', onclick: e => { orient.querySelectorAll('button').forEach(b => b.classList.remove('on')); e.target.classList.add('on'); orient.dataset.v = v; } }, l)));
+    orient.dataset.v = cfg.orient;
+    const center = h('select', null, [['', 'automatico (dal centro per heel e trim)'], ['1', 'dal centro (zero in mezzo)'], ['0', 'dal minimo']].map(([v, l]) => h('option', { value: v, selected: String(cfg.center == null ? '' : cfg.center ? 1 : 0) === v }, l)));
+    const mn = num(cfg.min, 'auto'), mx = num(cfg.max, 'auto'), zl = num(cfg.zLo, 'da'), zh = num(cfg.zHi, 'a');
+    const color = h('input', { type: 'color', value: cfg.color || getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() });
+    const zcolor = h('input', { type: 'color', value: cfg.zoneColor || getComputedStyle(document.documentElement).getPropertyValue('--good').trim() });
+    const thick = h('select', null, [[0.25, 'sottile'], [0.5, 'media'], [0.8, 'spessa'], [1, 'piena']].map(([v, l]) => h('option', { value: v, selected: cfg.thick === v }, l)));
+    const damp = h('select', null, DAMP_CHOICES.map(d => h('option', { value: d, selected: d === cfg.damp }, d ? `media degli ultimi ${d} s` : 'valore istantaneo')));
+    const chk = (k, label) => { const i = h('input', { type: 'checkbox', checked: !!cfg[k] }); i._k = k; return h('label', { class: 'row', style: { gap: '6px', fontSize: '13px' } }, i, label); };
+    const checks = [chk('showVal', 'Numero'), chk('showScale', 'Scala'), chk('zoneTint', 'Barra verde dentro la zona'), chk('reverse', 'Inverti la direzione')];
+    const title = h('input', { type: 'text', class: 'full', value: cfg.title || '', placeholder: 'nome della grandezza' });
+    let colorTouched = false, zcolorTouched = false;
+    color.addEventListener('input', () => { colorTouched = true; }); zcolor.addEventListener('input', () => { zcolorTouched = true; });
+    return {
+      el: h('div', { style: { display: 'grid', gap: '12px' } },
+        h('div', { class: 'row', style: { gap: '18px' } }, h('div', { class: 'f' }, 'Direzione', orient), h('label', { class: 'f' }, 'La barra parte', center)),
+        h('div', { class: 'row', style: { gap: '18px' } }, h('div', { class: 'f' }, 'Scala (vuoto = automatica)', h('div', { class: 'row', style: { gap: '6px' } }, 'da', mn, 'a', mx)), h('div', { class: 'f' }, 'Zona obiettivo (es. heel da −2 a 2)', h('div', { class: 'row', style: { gap: '6px' } }, zl, zh))),
+        h('div', { class: 'row', style: { gap: '18px' } }, h('label', { class: 'f' }, 'Colore della barra', color), h('label', { class: 'f' }, 'Colore della zona', zcolor), h('label', { class: 'f' }, 'Spessore', thick), h('label', { class: 'f' }, 'Numero', damp)),
+        h('div', { class: 'f' }, 'Cosa mostrare', h('div', { class: 'row', style: { gap: '14px' } }, checks)),
+        h('label', { class: 'f' }, 'Titolo', title),
+        h('div', { class: 'f' }, 'Grandezze (una barra per ognuna)', pick.el)),
+      apply: () => {
+        cfg.ids = pick.get(); cfg.orient = orient.dataset.v; cfg.center = center.value === '' ? null : center.value === '1';
+        const n = x => x.value === '' ? null : Number(x.value);
+        cfg.min = n(mn); cfg.max = n(mx); cfg.zLo = n(zl); cfg.zHi = n(zh);
+        if (colorTouched) cfg.color = color.value; if (zcolorTouched) cfg.zoneColor = zcolor.value;
+        cfg.thick = Number(thick.value); cfg.damp = Number(damp.value); cfg.title = title.value.trim();
+        for (const l of checks) { const i = l.querySelector('input'); cfg[i._k] = i.checked; }
+        this.build();
+      }
+    };
+  }
+  destroy() {}
+}
+PANEL_TYPES.bar = { label: 'Barra (heel, trim…)', icon: '▬' };
+PANEL_CLASSES.bar = BarPanel;

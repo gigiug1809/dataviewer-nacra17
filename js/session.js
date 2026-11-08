@@ -116,8 +116,8 @@ class Session {
       const pz = cam.pitchZero != null && cam.pitchZero !== '' ? Number(cam.pitchZero) : med(att.filter((_, i) => i % 5 === 0).map(a => a[2]));
       cam._autoZero = { heel: hz, pitch: pz };
       const sh = cam.heelInv ? -1 : 1, sp = cam.pitchInv ? -1 : 1;
-      out.push(makeChannel({ id: `${id}:heel`, name: `Sbandamento (${cam.name})`, unit: '°', role: 'heel', src: id, srcName, t: T, v: Float64Array.from(att, a => sh * (a[1] - hz)), dec: 1 }));
-      out.push(makeChannel({ id: `${id}:pitch`, name: `Beccheggio (${cam.name})`, unit: '°', role: 'pitch', src: id, srcName, t: T, v: Float64Array.from(att, a => sp * (a[2] - pz)), dec: 1 }));
+      out.push(makeChannel({ id: `${id}:heel`, name: `Heel (${cam.name})`, unit: '°', role: 'heel', src: id, srcName, t: T, v: Float64Array.from(att, a => sh * (a[1] - hz)), dec: 1 }));
+      out.push(makeChannel({ id: `${id}:pitch`, name: `Trim (${cam.name})`, unit: '°', role: 'pitch', src: id, srcName, t: T, v: Float64Array.from(att, a => sp * (a[2] - pz)), dec: 1 }));
     }
     if (acc.length > 10) {
       acc.sort((a, b) => a[0] - b[0]);

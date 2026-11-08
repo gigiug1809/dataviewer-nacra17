@@ -9,9 +9,10 @@ const Editor = {
     this.folder = folder; this.tabs.clear(); this.channels.clear();
     if (folder) {
       this.meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
-      if (!this.meta) { toast('Uscita non trovata.'); Router.go('#/'); return; }
+      if (!this.meta) { toast('Uscita non trovata.'); Router.go('#/debrief'); return; }
     } else this.meta = newSessionMeta();
     if (folder) this.migrateClips();
+    for (const s of this.meta.sources) for (const c of s.columns || []) c.name = modernName(c.name);
     this.render();
     if (folder) this.parseAll().then(() => this.runAutoSync());
   },
@@ -49,7 +50,7 @@ const Editor = {
     const day = m.date ? fmtDateLong(m.date) : 'Uscita';
     const title = !m.title || m.title === 'Uscita' ? day : m.title;
     page.append(h('div', { class: 'topbar' },
-      h('button', { class: 'btn ghost', onclick: () => Router.go('#/') }, '← Calendario'),
+      h('button', { class: 'btn ghost', onclick: () => Router.go('#/debrief') }, '← Calendario'),
       h('div', { class: 'grow' }, h('h1', { style: { textTransform: 'capitalize' } }, isNew ? 'Nuova uscita' : title), !isNew && title !== day ? h('div', { class: 'lib-path', style: { textTransform: 'capitalize' } }, day) : null),
       !isNew ? h('button', { class: 'btn primary', onclick: () => Router.go(`#/uscita/${encodeURIComponent(this.folder)}/viewer`) }, 'Apri la dashboard →') : null));
     const grid = h('div', { class: 'ed-grid' });
@@ -93,7 +94,7 @@ const Editor = {
       h('p', { class: 'stat' }, 'La direzione del vento serve a distinguere virate e strambate e a calcolare angolo al vento (TWA) e VMG. Puoi lasciarla vuota.'));
     if (isNew) {
       sec.append(h('div', { class: 'row' }, h('div', { class: 'sp' }),
-        h('button', { class: 'btn', onclick: () => Router.go('#/') }, 'Annulla'),
+        h('button', { class: 'btn', onclick: () => Router.go('#/debrief') }, 'Annulla'),
         h('button', { class: 'btn primary', onclick: () => this.create() }, 'Crea l\'uscita e carica i file →')));
     }
     return sec;
@@ -103,6 +104,15 @@ const Editor = {
     if (!m.title.trim()) { toast('Scrivi un titolo per l\'uscita.'); $('#view-editor input').focus(); return; }
     if (!m.date) { toast('Indica la data.'); return; }
     LS.set('lastBoat', m.boat); LS.set('lastHelm', m.helm); LS.set('lastCrew', m.crew);
+    // un giorno = una giornata: se esiste già, di solito si aggiungono lì i file
+    const same = (await Store.listSessions()).filter(x => x.meta.date === m.date);
+    if (same.length) {
+      const choice = await new Promise(res => modal({ title: 'Questo giorno ha già una giornata', onClose: () => res(null),
+        body: h('p', null, `Il ${fmtDateLong(m.date)} c'è già "${same[0].meta.title || 'Uscita'}". Di solito conviene aggiungere lì video e dati, così l'allenamento resta tutto in un posto. Crea una seconda giornata solo se sono due uscite diverse (per esempio mattina e pomeriggio).`),
+        actions: [{ label: 'Annulla', run: () => res(null) }, { label: 'Crea una seconda giornata', run: () => res('new') }, { label: `Apri "${same[0].meta.title || 'Uscita'}"`, kind: 'primary', run: () => res('open') }] }));
+      if (choice === 'open') { Router.go(`#/uscita/${encodeURIComponent(same[0].folder)}/dati`); return; }
+      if (choice !== 'new') return;
+    }
     try {
       const folder = await Store.createSession(m);
       Router.go(`#/uscita/${encodeURIComponent(folder)}/dati`);
@@ -163,10 +173,10 @@ const Editor = {
       zh.addEventListener('change', () => { cam.heelZero = zh.value === '' ? null : Number(zh.value); this.save(); });
       zp.addEventListener('change', () => { cam.pitchZero = zp.value === '' ? null : Number(zp.value); this.save(); });
       card.append(h('div', { class: 'row small' },
-        h('label', { class: 'chk' }, tel, 'Usa la telemetria GoPro (sbandamento, beccheggio e urti dal sensore di gravità; posizione e velocità se il GPS era acceso)'),
+        h('label', { class: 'chk' }, tel, 'Usa la telemetria GoPro (heel, trim e urti dal sensore di gravità; posizione e velocità se il GPS era acceso)'),
         cam.telemetry !== false ? h('span', { class: 'row' },
-          h('span', { class: 'stat' }, 'Zero sbandamento °'), zh, h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!cam.heelInv, onchange: e => { cam.heelInv = e.target.checked; this.save(); } }), 'inverti'),
-          h('span', { class: 'stat' }, 'Zero beccheggio °'), zp, h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!cam.pitchInv, onchange: e => { cam.pitchInv = e.target.checked; this.save(); } }), 'inverti')) : null),
+          h('span', { class: 'stat' }, 'Zero heel °'), zh, h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!cam.heelInv, onchange: e => { cam.heelInv = e.target.checked; this.save(); } }), 'inverti'),
+          h('span', { class: 'stat' }, 'Zero trim °'), zp, h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!cam.pitchInv, onchange: e => { cam.pitchInv = e.target.checked; this.save(); } }), 'inverti')) : null),
         cam.telemetry !== false ? h('p', { class: 'stat' }, 'L\'assetto ha senso solo se la camera è fissata alla barca (non sul casco). "auto" prende come zero la posizione media della camera.') : null);
     }
     const tb = h('table', { class: 'tbl' }, h('thead', null, h('tr', null, ['File', 'Durata', 'Video', 'Inizio', 'Ora presa da', 'Camera', ''].map(x => h('th', null, x)))));
@@ -336,7 +346,15 @@ const Editor = {
           this.tabs.set(src.id, { tab, cols });
         }
         // stessa registrazione del telefono già presente?
-        if (src.kind === 'iPhone' && !src.live && src.recId && this.meta.sources.some(x => x.kind === 'iPhone' && !x.live && x.recId === src.recId)) { toast('Questa registrazione del telefono è già nell\'uscita.'); continue; }
+        if (src.kind === 'iPhone' && !src.live && src.recId && this.meta.sources.some(x => x.kind === 'iPhone' && !x.live && x.recId === src.recId)) { toast('Questa registrazione del telefono è già nella giornata.'); continue; }
+        // file del telefono di un altro giorno: lo metto nella sua giornata, non qui
+        if (src.kind === 'iPhone' && !src.live) {
+          const day = phoneFileDay(this.tabs.get(src.id).tab);
+          if (day && day !== this.meta.date) {
+            const ok = await confirmBox('Questo file è di un altro giorno', `La registrazione del telefono "${name}" è del ${fmtDateLong(day)}, questa giornata è del ${fmtDateLong(this.meta.date)}. La metto nella giornata del ${fmtDateLong(day)}?`, 'Sì, nel giorno giusto');
+            if (ok) { const r = await importPhoneFile(file); toast(r.msg, 8000); continue; }
+          }
+        }
         await Store.writeText(`${this.folder}/${dest}`, data);
         this.meta.sources.push(src);
         this.save();
@@ -368,20 +386,7 @@ const Editor = {
     return lives.length;
   },
   /* tratti segnati sul telefono (tasto "Inizia / Fine tratto") scritti nel file: diventano tratti dell'uscita */
-  importSegments(text) {
-    const marks = [...text.matchAll(/^# tratto (inizio|fine) (\S+)/gm)].map(m => [m[1], Date.parse(m[2])]).filter(m => isFinite(m[1]));
-    let open = null, n = 0;
-    for (const [k, t] of marks) {
-      if (k === 'inizio') open = t;
-      else if (open != null) {
-        const dup = this.meta.events.some(e => e.type === 'tratto' && Math.abs(e.t - open) < 3000);
-        if (!dup) { this.meta.events.push({ id: uid('e'), t: open, t2: t, type: 'tratto', note: `Tratto ${this.meta.events.filter(e => e.type === 'tratto').length + 1}`, by: 'telefono' }); n++; }
-        open = null;
-      }
-    }
-    if (n) { this.meta.events.sort((a, b) => a.t - b.t); this.save(); }
-    return n;
-  },
+  importSegments(text) { return importSegmentsInto(this.meta, text, () => this.save()); },
   async parseAll() {
     for (const src of this.meta.sources) {
       try {
@@ -581,3 +586,50 @@ const Editor = {
 // trascinare file fuori dalle zone non deve aprirli nel browser
 window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('drop', e => e.preventDefault());
+
+/* ---------- File del telefono: ognuno nella giornata del suo giorno ---------- */
+/* giorno di una registrazione del telefono: dall'intestazione ("inizio …"), altrimenti dalla prima riga */
+function phoneFileDay(tab) {
+  const m = /inizio\s+(\S+)/.exec(tab.meta || '');
+  let t = m ? Date.parse(m[1]) : NaN;
+  if (!isFinite(t)) { const j = tab.header.indexOf('time_utc'); if (j >= 0 && tab.data.length) t = Date.parse(tab.data[0][j]); }
+  return isFinite(t) ? ymdOf(t) : null;
+}
+/* tratti scritti nel file del telefono (dal suo tasto o mandati dal gommone con N17 Live) */
+function importSegmentsInto(meta, text, save) {
+  const marks = [...text.matchAll(/^# tratto (inizio|fine) (\S+)/gm)].map(m => [m[1], Date.parse(m[2])]).filter(m => isFinite(m[1]));
+  let open = null, n = 0;
+  for (const [k, t] of marks) {
+    if (k === 'inizio') open = t;
+    else if (open != null) {
+      const dup = meta.events.some(e => e.type === 'tratto' && Math.abs(e.t - open) < 3000);
+      if (!dup) { meta.events.push({ id: uid('e'), t: open, t2: t, type: 'tratto', note: `Tratto ${meta.events.filter(e => e.type === 'tratto').length + 1}`, by: 'telefono' }); n++; }
+      else { const e = meta.events.find(e => e.type === 'tratto' && Math.abs(e.t - open) < 3000); if (e.t2 == null) e.t2 = t; }
+      open = null;
+    }
+  }
+  if (n) { meta.events.sort((a, b) => a.t - b.t); save && save(); }
+  return n;
+}
+/* importa un file del Logger nella giornata del suo giorno (la crea se non c'è).
+   Sostituisce i dati ricevuti in live della stessa registrazione; eventi e tratti restano. */
+async function importPhoneFile(file) {
+  const text = await file.text();
+  const tab = parseTable(text), cols = analyzeCols(tab), cfg = guessSourceConfig(tab, cols);
+  if (cfg.kind !== 'iPhone') return { ok: false, msg: `${file.name}: non è un file del Logger. Gli altri file (video, Garmin, Cyclops…) si caricano aprendo la giornata.` };
+  const day = phoneFileDay(tab);
+  if (!day) return { ok: false, msg: `${file.name}: non trovo la data della registrazione.` };
+  const folder = await Store.dayFolder(day);
+  const meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
+  const dest = `dati/${file.name}`;
+  if ((cfg.recId && meta.sources.some(x => x.kind === 'iPhone' && !x.live && x.recId === cfg.recId)) || meta.sources.some(x => x.file === dest))
+    return { ok: true, day, folder, dup: true, msg: `${file.name}: c'era già nella giornata del ${fmtDateLong(day)}.` };
+  await Store.writeText(`${folder}/${dest}`, text);
+  const lives = meta.sources.filter(x => x.kind === 'iPhone' && x.live && cfg.recId && x.recId === cfg.recId);
+  meta.sources = meta.sources.filter(x => !lives.includes(x));
+  meta.sources.push(Object.assign({ id: uid('s'), file: dest, name: 'iPhone' }, cfg));
+  const seg = importSegmentsInto(meta, text);
+  await Store.saveSession(folder, meta);
+  const extra = [lives.length ? 'ha preso il posto dei dati ricevuti in live' : '', seg ? `${seg} ${seg === 1 ? 'tratto' : 'tratti'}` : ''].filter(Boolean).join(', ');
+  return { ok: true, day, folder, msg: `${file.name} → giornata del ${fmtDateLong(day)}${extra ? ' (' + extra + ')' : ''}.` };
+}

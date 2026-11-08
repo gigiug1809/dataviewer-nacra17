@@ -23,7 +23,7 @@ const Viewer = {
     const load = h('div', { class: 'loading' }, h('div', null, h('b', null, 'Apro l\'uscita…'), h('div', { class: 'progress', style: { width: '100%' } }, h('i')), h('span', { class: 'small' }, '')));
     root.append(load);
     const meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
-    if (!meta) { toast('Uscita non trovata.'); Router.go('#/'); return; }
+    if (!meta) { toast('Uscita non trovata.'); Router.go('#/debrief'); return; }
     meta.view = meta.view || {};
     const S = this.S = new Session(folder, meta);
     await S.load((msg, p) => { load.querySelector('span').textContent = msg; load.querySelector('.progress i').style.width = (p * 100) + '%'; });
@@ -69,8 +69,9 @@ const Viewer = {
     this.panels = new Map();
     if (this.grid) { this.grid.destroy(false); this.grid = null; }
     if (this.S) this.S.dispose();
-    this.S = null;
+    this.S = null; this.frameArea = null;
     $('#view-viewer').textContent = '';
+    $('#view-viewer').classList.remove('dash-mode', 'no-tl', 'editing');
   },
 
   /* ---------- Interfaccia ---------- */
@@ -84,7 +85,7 @@ const Viewer = {
     this.lockBtn = lockBtn;
     lockBtn.onclick = () => { this.locked = !this.locked; lockBtn.classList.toggle('on', this.locked); lockBtn.textContent = this.locked ? '🔒' : '🔓'; this.grid.setStatic(this.locked); this.gridEl.classList.toggle('locked', this.locked); this.saveViewSoon(); };
     const top = h('div', { class: 'vtop' },
-      h('button', { class: 'btn ghost sm', onclick: () => Router.go('#/') }, '← Libreria'),
+      h('button', { class: 'btn ghost sm', onclick: () => Router.go('#/debrief') }, '← Libreria'),
       h('div', { class: 'title', title: m.title }, m.title || S.folder),
       h('span', { class: 'faint small' }, fmtDateLong(m.date)),
       h('span', { id: 'saveDot', class: 'save-dot' }, 'Salvato'),
@@ -102,7 +103,15 @@ const Viewer = {
     this.gridWrap = h('div', { class: 'vgrid-wrap' });
     this.gridEl = h('div', { class: 'grid-stack' + (this.locked ? ' locked' : '') });
     this.gridWrap.append(this.gridEl);
-    root.append(top, this.gridWrap, this.buildTimeline());
+    this.frameArea = null;
+    if (S.dash) {
+      // dashboard del Live: barra compatta; mentre si compone con i dati simulati, cornice con le proporzioni dell'iPad
+      root.classList.add('dash-mode');
+      root.classList.toggle('no-tl', !LS.get('dashTimeline', false));
+      if (S.sim) this.frameArea = h('div', { class: 'vframe-area' }, this.gridWrap);
+      root.append(this.dashTop(), this.frameArea || this.gridWrap, this.buildTimeline());
+      this.setEditing(!this.locked, true);
+    } else root.append(top, this.gridWrap, this.buildTimeline());
     this.grid = GridStack.init({ column: COLS, cellHeight: this.cellH(), margin: 0, float: true, handle: '.pnl-grip', animate: false, staticGrid: this.locked, resizable: { handles: 'se' }, disableOneColumnMode: true, columnOpts: { breakpoints: [] } }, this.gridEl);
     this.panels = new Map();
     const layout = (m.layout && m.layout.length ? m.layout : defaultLayout(S));
@@ -148,8 +157,73 @@ const Viewer = {
     if (last) setTimeout(() => last.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
     toast('Aggiunti: un grafico per ogni file nuovo' + (nums && top.length ? ' e le grandezze principali nel pannello Numeri' : '') + '. Spostali dove vuoi trascinando la maniglia ⠿ in alto a sinistra.', 7000);
   },
-  cellH() { const r = this.gridWrap ? this.gridWrap.clientHeight : window.innerHeight - 150; return Math.max(16, Math.floor((r - 8) / ROWS)); },
-  fitGrid() { if (!this.grid) return; this.grid.cellHeight(this.cellH()); this.drawTimeline(); },
+  cellH() { this.fitFrame(); const r = this.gridWrap ? this.gridWrap.clientHeight : window.innerHeight - 150; return Math.max(16, Math.floor((r - 8) / ROWS)); },
+  fitGrid() {
+    if (!this.grid) return;
+    const S = this.S;
+    // l'iPad è stato girato: passo all'altra disposizione della dashboard
+    if (S && S.dash && !S.sim) { const o = innerWidth >= innerHeight ? 'land' : 'port'; if (o !== S.orient) { S.orient = o; this.applyLayout(Dash.layout(S.dash, o), false); } }
+    this.grid.cellHeight(this.cellH()); this.drawTimeline();
+  },
+  /* cornice con le proporzioni dell'iPad (orizzontale o verticale) mentre si compone una dashboard */
+  fitFrame() {
+    if (!this.frameArea) return;
+    const r = this.frameArea.getBoundingClientRect(), ar = DASH_RATIO[this.S.orient] || 1.5;
+    if (!r.width || !r.height) return;
+    const w = Math.min(r.width - 24, (r.height - 24) * ar);
+    this.gridWrap.style.width = Math.round(w) + 'px'; this.gridWrap.style.height = Math.round(w / ar) + 'px';
+  },
+
+  /* ---------- Dashboard del Live ---------- */
+  dashTop() {
+    const S = this.S;
+    this.editBtn = h('button', { class: 'btn sm', onclick: () => this.setEditing(this.locked) });
+    const seg = S.sim ? h('div', { class: 'seg edit-only', title: 'Quale disposizione stai componendo' }, [['land', 'Orizzontale'], ['port', 'Verticale']].map(([o, l]) => h('button', { class: S.orient === o ? 'on' : '', onclick: () => this.setOrient(o) }, l))) : null;
+    this.orientSeg = seg;
+    return h('div', { class: 'vtop dash-top' },
+      h('button', { class: 'btn ghost sm', title: 'Barca e dashboard', onclick: () => Router.go('#/live') }, '←'),
+      h('div', { class: 'title', title: S.dash.name }, S.dash.name),
+      h('span', { id: 'liveBar', class: 'row', style: { gap: '6px' } }),
+      h('div', { class: 'sp' }),
+      seg,
+      h('button', { class: 'btn sm edit-only', onclick: e => this.addMenu(e.currentTarget) }, '+ Pannello'),
+      this.editBtn,
+      h('button', { class: 'icon-btn', title: 'Altro', 'aria-label': 'Altro', onclick: e => this.dashMenu(e.currentTarget) }, '⋯'));
+  },
+  setEditing(on, init = false) {
+    const S = this.S;
+    if (!on && S.sim && !init) { Router.go(`#/live/${encodeURIComponent(S.code)}/d/${encodeURIComponent(S.dash.id)}`); return; } // finito: ai dati veri
+    this.locked = !on;
+    if (!init) { this.grid.setStatic(this.locked); this.gridEl.classList.toggle('locked', this.locked); }
+    $('#view-viewer').classList.toggle('editing', on);
+    this.editBtn.textContent = on ? '✓ Fatto' : '✎ Modifica';
+    this.editBtn.classList.toggle('primary', on);
+    this.editBtn.title = on ? 'Finito: blocca i pannelli' : 'Sposta, ridimensiona, aggiungi o togli pannelli';
+    if (!init && on) toast(`Stai modificando la disposizione ${S.orient === 'port' ? 'verticale' : 'orizzontale'}: trascina i pannelli dalla maniglia ⠿, ridimensionali dall'angolo in basso a destra.`, 5000);
+  },
+  setOrient(o) {
+    const S = this.S;
+    if (S.orient === o) return;
+    S.orient = o; LS.set('dashOrient', o);
+    this.orientSeg.querySelectorAll('button').forEach((b, i) => b.classList.toggle('on', (i === 0) === (o === 'land')));
+    this.applyLayout(Dash.layout(S.dash, o), false);
+    this.fitGrid();
+    if (o === 'port' && !S.dash.port) toast('La disposizione verticale è ricavata da quella orizzontale: sistemala come vuoi, si salva da sola.', 6000);
+  },
+  dashMenu(anchor) {
+    const S = this.S, root = $('#view-viewer'), tl = !root.classList.contains('no-tl');
+    menu(anchor, [
+      { label: tl ? 'Nascondi la barra del tempo' : 'Mostra la barra del tempo (per tornare indietro)', run: () => { root.classList.toggle('no-tl', tl); LS.set('dashTimeline', !tl); this.fitGrid(); } },
+      { label: 'Finestra dei grafici…', run: () => { const sel = this.winSel.cloneNode(true); sel.value = String(this.win); modal({ title: 'Finestra dei grafici', body: h('label', { class: 'f' }, 'Quanto tempo mostrano i grafici', sel), actions: [{ label: 'Annulla' }, { label: 'OK', kind: 'primary', run: () => { this.win = Number(sel.value); this.winSel.value = sel.value; this.requestDraw(); this.saveViewSoon(); } }] }); } },
+      { label: 'Tema chiaro / scuro', run: toggleTheme },
+      { label: 'Quadro numeri grandi', run: () => Router.go(`#/live/${encodeURIComponent(S.code)}/quadro`) },
+      S.sim ? null : { label: 'Salva i dati ricevuti', run: () => Live.saveAs(S) },
+      { sep: true },
+      { head: 'Disposizione ' + (S.orient === 'port' ? 'verticale' : 'orizzontale') },
+      { label: 'Ricomincia dai pannelli di partenza', run: async () => { if (await confirmBox('Pannelli di partenza', 'Sostituisco i pannelli di questa disposizione con quelli di partenza?', 'Sostituisci')) { this.applyLayout(S.orient === 'port' ? portraitFrom(liveLayout()) : liveLayout()); } } },
+      S.orient === 'port' ? { label: 'Rifai la verticale da quella orizzontale', run: () => { S.dash.port = null; this.applyLayout(Dash.layout(S.dash, 'port')); } } : null
+    ].filter(Boolean));
+  },
 
   addPanel(p, save = true) {
     const id = p.id || uid('p');
@@ -177,7 +251,7 @@ const Viewer = {
     this.gridEl.append(el);
     this.grid.makeWidget(el, { x: p.x, y: p.y, w: p.w || 6, h: p.h || 8, id, autoPosition: p.x == null });
     const rec = { id, type: p.type, cfg, inst, el, ttl, body };
-    rec.ro = new ResizeObserver(debounce(() => { inst.resize(); this.requestDraw(); }, 60));
+    rec.ro = new ResizeObserver(debounce(() => { if (this.panels.get(id) !== rec) return; inst.resize(); this.requestDraw(); }, 60)); // pannello già chiuso: niente
     rec.ro.observe(body);
     inst._rec = rec;
     this.panels.set(id, rec);
@@ -212,7 +286,7 @@ const Viewer = {
     }
     return out;
   },
-  layoutChanged() { if (!this.S || !this.grid) return; this.S.meta.layout = this.layoutData(); this.S.save(); for (const r of this.panels.values()) r.ttl.textContent = r.inst.title(); },
+  layoutChanged() { if (!this.S || !this.grid) return; this.S.meta.layout = this.layoutData(); this.S.layoutDirty = true; this.S.save(); for (const r of this.panels.values()) r.ttl.textContent = r.inst.title(); },
   layoutChangedSoon: debounce(function () { Viewer.layoutChanged(); }, 800),
   panelSettings(inst) {
     const rec = inst._rec, cfg = rec.cfg;
@@ -249,8 +323,9 @@ const Viewer = {
     this.layoutChanged(); this.requestDraw();
     toast(`${PANEL_TYPES[rec.type].label}: ${Math.round(rec.cfg.size * 100)}%`, 1200);
   },
+  panelTypes() { return Object.entries(PANEL_TYPES).filter(([type]) => !(this.S.live && ['video', 'coverage'].includes(type))); },
   addMenu(anchor) {
-    menu(anchor, Object.entries(PANEL_TYPES).map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => this.addTypedPanel(type) })));
+    menu(anchor, this.panelTypes().map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => this.addTypedPanel(type) })));
   },
   async contextMenu(e) {
     e.preventDefault(); e.stopPropagation();
@@ -258,8 +333,9 @@ const Viewer = {
     const rec = item ? [...this.panels.values()].find(r => r.el === item) : null;
     const cell = this.grid.getCellFromPixel({ left: e.clientX, top: e.clientY }, false);
     const at = { x: Math.max(0, Math.min(COLS - 6, cell.x)), y: Math.max(0, cell.y) };
-    const add = Object.entries(PANEL_TYPES).map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => this.addTypedPanel(type, rec ? null : at) }));
-    const lib = await Store.libSettings().catch(() => ({ templates: [] }));
+    if (this.S.dash && this.locked) return; // dashboard bloccata: niente menu (sull'iPad il tocco lungo non deve aprire nulla)
+    const add = this.panelTypes().map(([type, d]) => ({ label: `${d.icon}  ${d.label}`, run: () => this.addTypedPanel(type, rec ? null : at) }));
+    const lib = this.S.live ? { templates: [] } : await Store.libSettings().catch(() => ({ templates: [] }));
     const items = [];
     if (rec) {
       items.push({ head: PANEL_TYPES[rec.type].label });
@@ -275,19 +351,21 @@ const Viewer = {
       items.push({ sep: true });
     }
     items.push({ head: rec ? 'Aggiungi un pannello' : 'Aggiungi qui un pannello' }, ...add, { sep: true });
-    items.push({ label: this.locked ? '🔓  Sblocca la disposizione' : '🔒  Blocca la disposizione', run: () => this.lockBtn.click() });
-    items.push({ label: 'Salva il layout come modello…', run: () => this.saveTemplate(lib) });
-    for (const tp of lib.templates) items.push({ label: `Applica il modello "${tp.name}"`, run: () => this.applyTemplate(tp) });
-    items.push({ label: 'Ripristina il layout predefinito', run: () => this.applyLayout(this.S.live ? liveLayout(this.S) : defaultLayout(this.S)) });
+    if (!this.S.dash) {
+      items.push({ label: this.locked ? '🔓  Sblocca la disposizione' : '🔒  Blocca la disposizione', run: () => this.lockBtn.click() });
+      items.push({ label: 'Salva il layout come modello…', run: () => this.saveTemplate(lib) });
+      for (const tp of lib.templates) items.push({ label: `Applica il modello "${tp.name}"`, run: () => this.applyTemplate(tp) });
+      items.push({ label: 'Ripristina il layout predefinito', run: () => this.applyLayout(defaultLayout(this.S)) });
+    } else items.push({ label: '✓  Fatto: blocca i pannelli', run: () => this.setEditing(false) });
     menu({ getBoundingClientRect: () => ({ left: e.clientX, bottom: e.clientY, top: e.clientY }) }, items);
   },
   addTypedPanel(type, at) {
     const cfg = {};
     if (type === 'video') { const used = [...this.panels.values()].filter(r => r.type === 'video').map(r => r.cfg.cam); const c = this.S.meta.cameras.find(c => !used.includes(c.id)) || this.S.meta.cameras[0]; cfg.cam = c && c.id; }
-    const sz = { video: [8, 10], chart: [8, 8], map: [7, 9], numbers: [5, 8], events: [8, 9], stats: [6, 7], coverage: [8, 5], averages: [7, 10] }[type] || [6, 6];
+    const sz = { video: [8, 10], chart: [8, 8], map: [7, 9], numbers: [5, 8], events: [8, 9], stats: [6, 7], coverage: [8, 5], averages: [7, 10], bar: [8, 4] }[type] || [6, 6];
     const rec = this.addPanel(Object.assign({ type, w: sz[0], h: sz[1], cfg }, at || {}));
     if (rec) setTimeout(() => rec.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
-    if (rec && ['chart', 'numbers', 'stats'].includes(type)) this.panelSettings(rec.inst);
+    if (rec && ['chart', 'numbers', 'stats', 'bar'].includes(type)) this.panelSettings(rec.inst);
   },
   async layoutMenu(anchor) {
     const lib = await Store.libSettings();
@@ -302,12 +380,14 @@ const Viewer = {
     ].filter(Boolean);
     menu(anchor, items);
   },
-  applyLayout(layout) {
+  applyLayout(layout, save = true) {
     for (const r of this.panels.values()) { r.ro.disconnect(); r.inst.destroy(); }
     this.grid.removeAll(true);
     this.panels = new Map();
     for (const p of layout) this.addPanel(Object.assign({}, p, { id: uid('p') }), false);
-    this.layoutChanged();
+    if (save) this.layoutChanged();
+    else if (this.S) this.S.meta.layout = this.layoutData();
+    this.requestDraw();
   },
   async saveTemplate(lib) {
     const name = await promptBox('Salva il layout come modello', 'Nome del modello (es. "Bolina", "Analisi carichi")', '');
@@ -407,16 +487,17 @@ const Viewer = {
       wrap);
     let dragging = false;
     const tAt = e => { const r = this.tlCanvas.getBoundingClientRect(); return this.S.t0 + clamp((e.clientX - r.left - 8) / (r.width - 16), 0, 1) * (this.S.t1 - this.S.t0); };
-    wrap.addEventListener('mousedown', e => { dragging = true; this.scrubbing = true; this.seek(tAt(e)); e.preventDefault(); });
-    window.addEventListener('mousemove', e => {
+    // eventi del puntatore: funzionano con il mouse e con il dito (iPad)
+    wrap.addEventListener('pointerdown', e => { dragging = true; this.scrubbing = true; this.seek(tAt(e)); e.preventDefault(); });
+    window.addEventListener('pointermove', e => {
       if (dragging) this.seek(tAt(e));
       if (e.target === this.tlCanvas || dragging) {
         const r = this.tlCanvas.getBoundingClientRect(), t = tAt(e);
         this.tlHover.hidden = false; this.tlHover.style.left = clamp(e.clientX - r.left, 30, r.width - 30) + 'px'; this.tlHover.textContent = fmtClock(t);
       }
     });
-    window.addEventListener('mouseup', () => { dragging = false; this.scrubbing = false; });
-    wrap.addEventListener('mouseleave', () => { if (!dragging) this.tlHover.hidden = true; });
+    window.addEventListener('pointerup', () => { dragging = false; this.scrubbing = false; });
+    wrap.addEventListener('pointerleave', () => { if (!dragging) this.tlHover.hidden = true; });
     this.updateRange();
     return tl;
   },
@@ -675,7 +756,8 @@ function resolveCfg(S, cfg, type) {
   const used = new Set();
   const find = r => {
     if (!r || typeof r === 'string') return S.ch(r) ? r : null;
-    const c = S.channels.find(c => !used.has(c.id) && c.name === r.name && c.srcName === r.srcName) || S.channels.find(c => !used.has(c.id) && c.name === r.name)
+    const nm = modernName(r.name);
+    const c = S.channels.find(c => !used.has(c.id) && c.name === nm && c.srcName === r.srcName) || S.channels.find(c => !used.has(c.id) && c.name === nm)
       || S.channels.find(c => !used.has(c.id) && c.role === r.role && r.role !== 'other' && c.unit === r.unit) || (r.role === 'sog' && S.sog && !used.has(S.sog.id) ? S.sog : null);
     if (c) used.add(c.id);
     return c ? c.id : null;
