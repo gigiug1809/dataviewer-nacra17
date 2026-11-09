@@ -620,8 +620,9 @@ async function importPhoneVideo(file, onStep) {
   const day = ymdOf(clip.start);
   const folder = await Store.dayFolder(day);
   const meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
-  const dest = `video/${file.name}`;
-  if (meta.cameras.some(c => c.clips.some(cl => cl.file === dest))) return { ok: true, day, folder, dup: true, msg: `${file.name}: c'era già nella giornata del ${fmtDateLong(day)}.` };
+  // AirDrop rinomina i doppioni ("N17_… 2.mov"): tengo il nome originale e riconosco il video dall'ora
+  const dest = `video/${file.name.replace(/ \d+(\.\w+)$/, '$1')}`;
+  if (meta.cameras.some(c => c.clips.some(cl => cl.file === dest || (Math.abs(cl.start - clip.start) < 50 && Math.abs(cl.duration - clip.duration) < 0.1)))) return { ok: true, day, folder, dup: true, msg: `${file.name}: c'era già nella giornata del ${fmtDateLong(day)}.` };
   const name = clip.startSrc === 'logger' ? 'iPhone (Logger)' : 'iPhone';
   let cam = meta.cameras.find(c => c.name === name);
   if (!cam) { cam = { id: uid('c'), name, offset: 0, telemetry: false, clips: [] }; meta.cameras.push(cam); }

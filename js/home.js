@@ -33,7 +33,7 @@ const Home = {
       h('button', { class: 'btn ghost', title: 'Live o Debrief', onclick: () => Router.go('#/') }, '← Inizio'),
       h('div', { class: 'brand' }, h('div', { class: 'brand-mark', html: ICON_BOAT }), h('div', null, h('h1', null, 'N17 Debrief'), h('div', { class: 'lib-path' }, Store.root ? ['Libreria: ', h('b', null, Store.name)] : 'Analisi delle giornate: video, dati e eventi'))),
       h('div', { class: 'sp' }),
-      Store.root ? h('button', { class: 'btn primary', title: 'Dati e video del Logger: puoi selezionarli tutti insieme, vanno da soli nel giorno giusto', onclick: () => phoneIn.click() }, '📥 Importa dal telefono') : null, phoneIn,
+      Store.root ? h('button', { class: 'btn primary', title: 'Dati e video del Logger: puoi selezionarli tutti insieme, vanno da soli nel giorno giusto', onclick: () => this.pickPhone(phoneIn) }, '📥 Importa dal telefono') : null, phoneIn,
       h('button', { class: 'btn', title: 'Dati della barca in tempo reale dal telefono', onclick: () => Router.go('#/live') }, '📡 Live'),
       installButton(),
       Store.root ? h('button', { class: 'btn ghost', onclick: () => this.changeLib() }, 'Cambia cartella') : null,
@@ -158,6 +158,16 @@ const Home = {
           h('button', { class: 'btn sm primary', onclick: e => { e.stopPropagation(); open(); } }, 'Apri')));
       list.append(el);
     }
+  },
+  /* scelta dei file: si apre direttamente in Download, dove arrivano con AirDrop (basta Cmd+A e Apri) */
+  async pickPhone(fallback) {
+    if (!window.showOpenFilePicker) { fallback.click(); return; }
+    let handles;
+    try {
+      handles = await window.showOpenFilePicker({ id: 'n17-telefono', startIn: 'downloads', multiple: true,
+        types: [{ description: 'Dati e video del Logger', accept: { 'text/csv': ['.csv'], 'video/quicktime': ['.mov'], 'video/mp4': ['.mp4'], 'application/json': ['.json'] } }] });
+    } catch (e) { if (e.name !== 'AbortError') fallback.click(); return; }
+    this.importPhone(await Promise.all(handles.map(h => h.getFile())));
   },
   /* file del Logger: ognuno nella giornata del suo giorno */
   async importPhone(files) {
