@@ -28,12 +28,12 @@ const Home = {
     root.textContent = '';
     const page = h('div', { class: 'page' });
     root.append(page);
-    const phoneIn = h('input', { type: 'file', accept: '.csv,text/csv', multiple: true, hidden: true, onchange: e => { const f = [...e.target.files]; e.target.value = ''; this.importPhone(f); } });
+    const phoneIn = h('input', { type: 'file', accept: '.csv,.json,.mov,.mp4,text/csv,video/*', multiple: true, hidden: true, onchange: e => { const f = [...e.target.files]; e.target.value = ''; this.importPhone(f); } });
     page.append(h('div', { class: 'topbar' },
       h('button', { class: 'btn ghost', title: 'Live o Debrief', onclick: () => Router.go('#/') }, '← Inizio'),
       h('div', { class: 'brand' }, h('div', { class: 'brand-mark', html: ICON_BOAT }), h('div', null, h('h1', null, 'N17 Debrief'), h('div', { class: 'lib-path' }, Store.root ? ['Libreria: ', h('b', null, Store.name)] : 'Analisi delle giornate: video, dati e eventi'))),
       h('div', { class: 'sp' }),
-      Store.root ? h('button', { class: 'btn primary', title: 'I file del Logger vanno da soli nel giorno giusto', onclick: () => phoneIn.click() }, '📥 Importa dal telefono') : null, phoneIn,
+      Store.root ? h('button', { class: 'btn primary', title: 'Dati e video del Logger: puoi selezionarli tutti insieme, vanno da soli nel giorno giusto', onclick: () => phoneIn.click() }, '📥 Importa dal telefono') : null, phoneIn,
       h('button', { class: 'btn', title: 'Dati della barca in tempo reale dal telefono', onclick: () => Router.go('#/live') }, '📡 Live'),
       installButton(),
       Store.root ? h('button', { class: 'btn ghost', onclick: () => this.changeLib() }, 'Cambia cartella') : null,
@@ -164,8 +164,17 @@ const Home = {
     files = files.filter(f => !/\.json$/i.test(f.name)); // il file .json accanto alla registrazione non serve
     if (!files.length) return;
     const out = [];
+    // prima i dati, poi i video (più lenti da copiare)
+    files.sort((a, b) => VIDEO_RE.test(a.name) - VIDEO_RE.test(b.name) || a.name.localeCompare(b.name));
+    const nv = files.filter(f => VIDEO_RE.test(f.name)).length;
+    let iv = 0;
     for (const f of files) {
-      if (!/\.csv$/i.test(f.name)) { out.push({ ok: false, msg: `${f.name}: qui si importano i file del Logger (.csv). Video, Garmin e Cyclops si caricano aprendo la giornata.` }); continue; }
+      if (VIDEO_RE.test(f.name)) {
+        iv++;
+        try { out.push(await importPhoneVideo(f, label => toast(`Video ${iv} di ${nv}: ${label}`, 2500))); } catch (e) { out.push({ ok: false, msg: `${f.name}: ${errMsg(e)}` }); }
+        continue;
+      }
+      if (!/\.csv$/i.test(f.name)) { out.push({ ok: false, msg: `${f.name}: qui si importano dati (.csv) e video del Logger. Garmin e Cyclops si caricano aprendo la giornata.` }); continue; }
       try { out.push(await importPhoneFile(f)); } catch (e) { out.push({ ok: false, msg: `${f.name}: ${errMsg(e)}` }); }
     }
     const days = [...new Set(out.filter(r => r.folder).map(r => r.folder))];
@@ -173,7 +182,7 @@ const Home = {
     if (last) { const [yy, mm] = last.day.split('-').map(Number); this.month = [yy, mm - 1]; }
     await this.render();
     modal({ title: 'Importazione dal telefono', wide: true, body: h('div', { style: { display: 'grid', gap: '8px' } }, out.map(r => h('div', { class: 'row', style: { gap: '8px' } }, h('span', { class: 'dot', style: { background: r.ok ? 'var(--good)' : 'var(--warn)' } }), h('span', null, r.msg))),
-      h('p', { class: 'stat' }, 'Ogni registrazione va nella giornata del suo giorno. Se quel giorno avevi salvato i dati del Live, il file del telefono prende il loro posto: niente doppioni, eventi e tratti restano.')),
+      h('p', { class: 'stat' }, 'Ogni registrazione e ogni video vanno nella giornata del loro giorno. I video del Logger sono già allineati ai dati. Se quel giorno avevi salvato i dati del Live, il file del telefono prende il loro posto: niente doppioni, eventi e tratti restano.')),
       actions: [{ label: 'Chiudi' }, ...(days.length === 1 ? [{ label: 'Apri la giornata', kind: 'primary', run: () => Router.go(`#/uscita/${encodeURIComponent(days[0])}/viewer`) }] : [])] });
   },
   async welcome(page) {

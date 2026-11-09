@@ -613,6 +613,31 @@ function importSegmentsInto(meta, text, save) {
 }
 /* importa un file del Logger nella giornata del suo giorno (la crea se non c'è).
    Sostituisce i dati ricevuti in live della stessa registrazione; eventi e tratti restano. */
+/* video del Logger (o dell'iPhone): va nella giornata del suo giorno, nella camera "iPhone" */
+async function importPhoneVideo(file, onStep) {
+  const clip = await probeClip(file);
+  if (!['logger', 'apple', 'gps'].includes(clip.startSrc)) return { ok: false, msg: `${file.name}: non trovo l'ora esatta del video. Caricalo aprendo la giornata (Video e dati).` };
+  const day = ymdOf(clip.start);
+  const folder = await Store.dayFolder(day);
+  const meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
+  const dest = `video/${file.name}`;
+  if (meta.cameras.some(c => c.clips.some(cl => cl.file === dest))) return { ok: true, day, folder, dup: true, msg: `${file.name}: c'era già nella giornata del ${fmtDateLong(day)}.` };
+  const name = clip.startSrc === 'logger' ? 'iPhone (Logger)' : 'iPhone';
+  let cam = meta.cameras.find(c => c.name === name);
+  if (!cam) { cam = { id: uid('c'), name, offset: 0, telemetry: false, clips: [] }; meta.cameras.push(cam); }
+  if (!(await Store.exists(`${folder}/${dest}`)) || (await Store.file(`${folder}/${dest}`)).size !== file.size) {
+    onStep && onStep(`copio ${file.name} (${fmtBytes(file.size)})…`);
+    let shown = 0;
+    await Store.copyIn(file, `${folder}/${dest}`, (p) => { if (onStep && p - shown >= 0.1) { shown = p; onStep(`copio ${file.name}: ${Math.round(p * 100)}%`); } });
+  }
+  clip.file = dest;
+  cam.clips.push(clip);
+  cam.clips.sort((a, b) => a.start - b.start);
+  await Store.saveSession(folder, meta);
+  const t = new Date(clip.start);
+  return { ok: true, day, folder, msg: `${file.name} → giornata del ${fmtDateLong(day)}, video delle ${p2(t.getHours())}:${p2(t.getMinutes())} (${fmtDur(clip.duration * 1000)}${clip.startSrc === 'logger' ? ', già allineato ai dati' : ''}).` };
+}
+
 async function importPhoneFile(file) {
   const text = await file.text();
   const tab = parseTable(text), cols = analyzeCols(tab), cfg = guessSourceConfig(tab, cols);
