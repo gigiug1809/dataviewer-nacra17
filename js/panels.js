@@ -248,7 +248,7 @@ class ChartPanel {
   build() {
     for (const l of this.lanes) l.u && l.u.destroy();
     this.lanes = []; this.el.textContent = '';
-    const chans = this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean);
+    const chans = this.S.chs(this.cfg.ids);
     if (!chans.length) {
       if (this.S.live && this.cfg.ids.length) { this.el.append(h('div', { class: 'pnl-empty' }, 'In attesa di questi dati dal telefono…')); return; }
       this.el.append(h('div', { class: 'pnl-empty' }, h('div', null, 'Scegli cosa mostrare in questo grafico.', h('button', { class: 'btn sm', onclick: () => this.V.panelSettings(this) }, 'Scegli i canali'))));
@@ -473,7 +473,7 @@ class ChartPanel {
     let pick;
     const laneName = (k, list) => k.startsWith('L') ? `Grafico ${k.slice(1)}` : k === '°dir' ? 'Direzioni (0–360°)' : `Grafico in ${k === '-' ? 'numeri senza unità' : k}`;
     const drawY = () => {
-      const chans = pick.get().map(id => S.ch(id)).filter(Boolean);
+      const chans = S.chs(pick.get());
       yBox.textContent = '';
       for (const [key, list] of this.groupLanes(chans, st)) {
         const L = lanesCfg[key] || (lanesCfg[key] = Object.assign({}, this.laneY(key)));
@@ -487,12 +487,12 @@ class ChartPanel {
       if (!yBox.children.length) yBox.append(h('span', { class: 'muted small' }, 'Scegli prima le linee qui sotto.'));
     };
     const draw = () => {
-      const chans = pick.get().map(id => S.ch(id)).filter(Boolean);
+      const chans = S.chs(pick.get());
       serBox.textContent = '';
       if (!chans.length) { serBox.append(h('span', { class: 'muted small' }, 'Scegli le grandezze nell\'elenco qui sotto.')); drawY(); return; }
       const tb = h('table', { class: 'ev-table ser-table' }, h('thead', null, h('tr', null, ['Linea', 'In quale grafico', 'Colore', 'Tratto', 'Spessore'].map(x => h('th', null, x)))));
       const body = h('tbody');
-      const all = cfg.ids.map(id => S.ch(id)).filter(Boolean);
+      const all = S.chs(cfg.ids);
       chans.forEach(c => {
         const o = st[c.id] || (st[c.id] = {});
         const idx = all.includes(c) ? all.indexOf(c) : chans.indexOf(c);
@@ -517,7 +517,7 @@ class ChartPanel {
         cfg.ids = pick.get(); cfg.title = title.value.trim(); cfg.lw = Number(lw.value);
         const keep = {}; for (const id of cfg.ids) if (st[id] && Object.values(st[id]).some(v => v != null)) keep[id] = st[id];
         cfg.st = keep;
-        const used = new Set([...this.groupLanes(cfg.ids.map(id => S.ch(id)).filter(Boolean), keep).keys()]);
+        const used = new Set([...this.groupLanes(S.chs(cfg.ids), keep).keys()]);
         cfg.lanes = Object.fromEntries(Object.entries(lanesCfg).filter(([k]) => used.has(k)));
         delete cfg.yMode; delete cfg.yFix;
         this.build();
@@ -700,7 +700,7 @@ class NumbersPanel {
     this.el.classList.toggle('no-unit', !!this.cfg.noUnit);
     this.el.classList.toggle('align-c', this.cfg.align === 'center');
     this.tiles = [];
-    const chans = this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean);
+    const chans = this.S.chs(this.cfg.ids);
     if (!chans.length && this.S.live && this.cfg.ids.length) { this.el.append(h('div', { class: 'pnl-empty', style: { background: 'var(--surface)' } }, 'In attesa dei dati dal telefono…')); return; }
     if (!chans.length) { this.el.append(h('div', { class: 'pnl-empty', style: { background: 'var(--surface)' } }, h('div', null, 'Scegli le grandezze da mostrare.', h('button', { class: 'btn sm', onclick: () => this.V.panelSettings(this) }, 'Scegli i canali')))); return; }
     for (const c of chans) {
@@ -884,7 +884,7 @@ class StatsPanel {
     if (key === this.lastKey) return;
     this.lastKey = key;
     this.el.textContent = '';
-    const chans = this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean);
+    const chans = this.S.chs(this.cfg.ids);
     if (!chans.length) { this.el.append(h('div', { class: 'pnl-empty' }, h('div', null, 'Scegli le grandezze.', h('button', { class: 'btn sm', onclick: () => this.V.panelSettings(this) }, 'Scegli i canali')))); return; }
     const tb = h('table', { class: 'ev-table' }, h('thead', null, h('tr', null, ['Grandezza', 'Media', 'Min', 'Max', 'Dev. std'].map(x => h('th', null, x)))));
     const body = h('tbody');
@@ -981,7 +981,7 @@ class BarPanel {
   build() {
     this.el.textContent = '';
     this.el.classList.toggle('v', this.cfg.orient === 'v');
-    const chans = this.cfg.ids.map(id => this.S.ch(id)).filter(Boolean);
+    const chans = this.S.chs(this.cfg.ids);
     this.units = chans.map(c => { const cv = h('canvas'); this.el.append(cv); return { c, cv }; });
     if (!chans.length) this.el.append(h('div', { class: 'pnl-empty' }, this.S.live && this.cfg.ids.length ? 'In attesa di questi dati dal telefono…' : h('div', null, 'Scegli la grandezza da mostrare.', h('button', { class: 'btn sm', onclick: () => this.V.panelSettings(this) }, 'Scegli'))));
     this.lastKey = '';

@@ -56,6 +56,7 @@ class Session {
       try { this.channels.push(...await this.loadCamTelemetry(cam)); }
       catch (e) { this.loadErrors.push(`${cam.name}: ${errMsg(e)}`); }
     }
+    this.mergeLogger();
     this.derive();
     progress('Pronto', 1);
   }
@@ -70,6 +71,36 @@ class Session {
     const text = await Store.readText(this.path(src.file));
     const tab = parseTable(text), cols = analyzeCols(tab);
     return buildChannels(tab, cols, Object.assign({ baseDate: this.meta.date }, src), src.id, src.name);
+  }
+
+  /* Più registrazioni del Logger nello stesso giorno (per esempio fermata e ripartita) sono lo stesso
+     telefono: unisco i loro canali in uno solo per misura, così mappa, numeri e grafici coprono tutta l'uscita.
+     I canali prendono il nome dalla prima registrazione; quelli delle altre restano raggiungibili (alias),
+     così i pannelli già salvati continuano a funzionare. Tra una registrazione e l'altra la linea si interrompe. */
+  mergeLogger() {
+    this.alias = new Map(); this.srcAlias = new Map();
+    const ids = new Set(this.meta.sources.filter(s => s.kind === 'iPhone' && !s.live).map(s => s.id));
+    const mine = this.channels.filter(c => ids.has(c.src));
+    const srcs = [...new Set(mine.map(c => c.src))];
+    if (srcs.length < 2) return;
+    const first = id => Math.min(...mine.filter(c => c.src === id).map(c => c.t[0]));
+    srcs.sort((a, b) => first(a) - first(b));
+    const base = srcs[0], groups = new Map();
+    for (const c of mine) { const key = c.id.slice(c.src.length + 1); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(c); }
+    const merged = [];
+    for (const [key, list] of groups) {
+      list.sort((a, b) => a.t[0] - b.t[0]);
+      let pts = [];
+      for (const c of list) for (let i = 0; i < c.t.length; i++) pts.push([c.t[i], c.v[i]]);
+      // se due registrazioni si sovrappongono metto i punti in ordine di tempo
+      if (list.some((c, i) => i && c.t[0] < list[i - 1].t[list[i - 1].t.length - 1])) pts.sort((a, b) => a[0] - b[0]);
+      const c0 = list[0];
+      merged.push(makeChannel({ id: `${base}:${key}`, name: c0.name, unit: c0.unit, role: c0.role, src: base, srcName: c0.srcName,
+        t: Float64Array.from(pts, p => p[0]), v: Float64Array.from(pts, p => p[1]), dec: c0.dec }));
+      pts = null;
+    }
+    for (const id of srcs.slice(1)) { this.srcAlias.set(id, base); for (const key of groups.keys()) this.alias.set(`${id}:${key}`, `${base}:${key}`); }
+    this.channels = this.channels.filter(c => !ids.has(c.src)).concat(merged);
   }
 
   /* Telemetria GoPro (assetto della camera, accelerazioni, GPS), con cache su disco */
@@ -146,7 +177,8 @@ class Session {
     for (const c of this.channels) { if (!bySrc.has(c.src)) bySrc.set(c.src, []); bySrc.get(c.src).push(c); }
     const posSrcs = [...bySrc.entries()].filter(([, l]) => l.some(c => c.role === 'lat') && l.some(c => c.role === 'lon'))
       .sort((a, b) => (SRC_PRIORITY[kindOf(a[1][0])] ?? 2) - (SRC_PRIORITY[kindOf(b[1][0])] ?? 2));
-    const chosen = posSrcs.find(([s]) => s === this.meta.posSource) || posSrcs[0];
+    const wantPos = (this.srcAlias && this.srcAlias.get(this.meta.posSource)) || this.meta.posSource;
+    const chosen = posSrcs.find(([s]) => s === wantPos) || posSrcs[0];
     this.pos = null;
     if (chosen) {
       const [sid, list] = chosen;
@@ -157,7 +189,7 @@ class Session {
     }
     this.index();
     const sogs = this.channels.filter(c => c.role === 'sog');
-    this.sog = this.byId.get(this.meta.mainSog) || (this.pos && sogs.find(c => c.src === this.pos.src)) || sogs[0] || null;
+    this.sog = this.ch(this.meta.mainSog) || (this.pos && sogs.find(c => c.src === this.pos.src)) || sogs[0] || null;
     const cogs = this.channels.filter(c => c.role === 'cog'), hdgs = this.channels.filter(c => c.role === 'hdg');
     this.cog = (this.pos && cogs.find(c => c.src === this.pos.src)) || cogs[0] || hdgs[0] || null;
     const twd = parseFloat(this.meta.twd);
@@ -166,7 +198,9 @@ class Session {
     this.range();
   }
   index() { this.byId = new Map(this.channels.map(c => [c.id, c])); }
-  ch(id) { return this.byId.get(id) || null; }
+  ch(id) { return this.byId.get(id) || (this.alias && this.byId.get(this.alias.get(id))) || null; }
+  /* più canali per id, senza doppioni (due id possono portare allo stesso canale unito) */
+  chs(ids) { return [...new Set((ids || []).map(id => this.ch(id)).filter(Boolean))]; }
   range() {
     let a = Infinity, b = -Infinity;
     for (const c of this.channels) { if (c.role === 'lat' || c.role === 'lon') continue; a = Math.min(a, c.t[0]); b = Math.max(b, c.t[c.t.length - 1]); }
