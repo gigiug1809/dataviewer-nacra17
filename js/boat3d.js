@@ -13,7 +13,11 @@ N17.hx = N17.B / 2 - N17.hw;            // asse di ogni scafo dal centro
 N17.zFront = -N17.L / 2 + 2.05;         // traversa anteriore (2,05 m dalla prua)
 N17.zRear = N17.L / 2 - 0.32;           // traversa posteriore
 
-const VIEWS3D = { poppa: [0, 1.5, 7.8], lato: [8.2, 1.1, 0], tre: [5.2, 2.8, 5.8], alto: [0, 12, 0.01] };
+// viste di lato e da poppa basse, quasi all'altezza del trampolino; [posizione, punto guardato (y)]
+const VIEWS3D = { poppa: [0, 0.32, 6.8], lato: [7.4, 0.3, 0], tre: [5.2, 2.8, 5.8], alto: [0, 12, 0.01] };
+const VIEW_TARGET_Y = { poppa: 0.05, lato: 0.05, tre: -0.3, alto: 0, libera: -0.2 };
+// l'acqua è solo un riferimento: non conosciamo l'altezza di volo, quindi sta ben sotto scafi e derive
+const WATER_Y = -1.9;
 
 /* scafo: sezioni a U lungo la lunghezza (z: prua -L/2, poppa +L/2) */
 function hullGeometry(T) {
@@ -153,12 +157,12 @@ class Boat3DPanel {
     sc.add(new T.HemisphereLight(0xffffff, dark ? 0x203040 : 0x6f8aa0, dark ? 1.6 : 2.0));
     const sun = new T.DirectionalLight(0xffffff, 1.6); sun.position.set(-6, 12, 5); sc.add(sun);
     // acqua: piano semitrasparente (si vedono le derive sotto) e griglia che scorre alla velocità della barca
-    const water = new T.Mesh(new T.PlaneGeometry(400, 400), new T.MeshStandardMaterial({ color: dark ? 0x1d4e6e : 0x3b7fae, roughness: 0.35, metalness: 0.1, transparent: true, opacity: 0.62, depthWrite: false }));
-    water.rotation.x = -Math.PI / 2; sc.add(water);
-    this.grid = new T.GridHelper(120, 60, dark ? 0x5d8bab : 0xe6f1fa, dark ? 0x3a6a8a : 0xbcd6ea); this.grid.position.y = 0.002;
-    this.grid.material.transparent = true; this.grid.material.opacity = 0.55; sc.add(this.grid);
+    const water = new T.Mesh(new T.PlaneGeometry(400, 400), new T.MeshStandardMaterial({ color: dark ? 0x1d4e6e : 0x3b7fae, roughness: 0.35, metalness: 0.1, transparent: true, opacity: 0.2, depthWrite: false }));
+    water.rotation.x = -Math.PI / 2; water.position.y = WATER_Y; sc.add(water);
+    this.grid = new T.GridHelper(120, 60, dark ? 0x5d8bab : 0xe6f1fa, dark ? 0x3a6a8a : 0xbcd6ea); this.grid.position.y = WATER_Y + 0.002;
+    this.grid.material.transparent = true; this.grid.material.opacity = 0.28; this.grid.material.depthWrite = false; sc.add(this.grid);
     this.boat = buildNacra(T); this.boat.rotation.order = 'YXZ'; sc.add(this.boat);
-    this.wind = windArrow(T); this.wind.position.y = 0.05; this.wind.visible = false; sc.add(this.wind);
+    this.wind = windArrow(T); this.wind.position.y = WATER_Y + 0.05; this.wind.visible = false; sc.add(this.wind);
     this.cam = new T.PerspectiveCamera(38, 1, 0.1, 300);
     this.bindOrbit();
     this.resize(); this.placeCamera(); this.update(this.V.t, false);
@@ -189,7 +193,7 @@ class Boat3DPanel {
     let p;
     if (this.cfg.view === 'libera') { const o = this.orbit || this.cfg.orbit || this.orbitNow(); this.cfg.orbit = o; p = [o.r * Math.cos(o.el) * Math.sin(o.az), o.r * Math.sin(o.el), o.r * Math.cos(o.el) * Math.cos(o.az)]; }
     else p = VIEWS3D[this.cfg.view] || VIEWS3D.tre;
-    this.cam.position.set(...p); this.cam.lookAt(0, -0.15, 0);
+    this.cam.position.set(...p); this.cam.lookAt(0, VIEW_TARGET_Y[this.cfg.view] ?? -0.2, 0);
   }
   /* assetto all'ora t (heel e trim interpolati dai dati a 25 Hz, prua per la vista dall'alto) */
   attitude(t) {
@@ -226,7 +230,7 @@ class Boat3DPanel {
     // vento (solo dall'alto, nord in alto): la freccia va nella direzione in cui soffia
     const w = top && this.S.wind ? this.S.twdAt(this.V.t) : NaN;
     this.wind.visible = isFinite(w);
-    if (isFinite(w)) { this.wind.rotation.y = -w * rad; this.wind.position.set(Math.sin(w * rad) * 3.6, 0.05, -Math.cos(w * rad) * 3.6); }
+    if (isFinite(w)) { this.wind.rotation.y = -w * rad; this.wind.position.set(Math.sin(w * rad) * 3.6, WATER_Y + 0.05, -Math.cos(w * rad) * 3.6); }
     this.renderer.render(this.scene, this.cam);
   }
   resize() {
