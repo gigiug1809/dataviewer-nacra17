@@ -151,11 +151,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
 /* griglia libera: i pannelli possono stare uno sopra l'altro (livelli) */
 .grid-stack { position: relative; min-height: 100%; }
 .grid-stack-item { position: absolute; }
-.grid-stack-item-content { position: absolute; inset: 2px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+.grid-stack-item-content { position: absolute; inset: 2px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden;
+  isolation: isolate; /* i livelli interni (mappa Leaflet: 400-1000) restano dentro il pannello e non coprono la maniglia */ }
 .grid-stack-item.fg-drag > .grid-stack-item-content { border-color: var(--accent); box-shadow: var(--shadow); }
 .grid-stack-item.clear > .grid-stack-item-content { background: transparent; border-color: transparent; }
 .grid-stack:not(.locked) .grid-stack-item.clear:hover > .grid-stack-item-content { border: 1px dashed var(--line-2); }
-.fg-rs { position: absolute; right: 2px; bottom: 2px; width: 14px; height: 14px; z-index: 7; cursor: se-resize; touch-action: none; border-bottom-right-radius: 8px; opacity: 0; transition: opacity .15s;
+.fg-rs { position: absolute; right: 2px; bottom: 2px; width: 18px; height: 18px; z-index: 7; cursor: se-resize; touch-action: none; border-bottom-right-radius: 8px; opacity: 0; transition: opacity .15s;
   background: linear-gradient(135deg, transparent 50%, var(--line-2) 50%, var(--line-2) 58%, transparent 58%, transparent 70%, var(--line-2) 70%, var(--line-2) 78%, transparent 78%); }
 .grid-stack-item:hover > .fg-rs, .fg-drag > .fg-rs { opacity: .9; }
 .locked .fg-rs { display: none; }
@@ -209,6 +210,16 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
 .lane-legend b { font-variant-numeric: tabular-nums; font-weight: 650; }
 .lane-legend em { font-style: normal; color: var(--muted); }
 .lane-plot { flex: 1; min-height: 0; position: relative; }
+/* strumenti di ogni grafico: + linea, scala Y, togli (compaiono passando sopra il pannello) */
+.lane-legend .lane-tools { margin-left: auto; display: inline-flex; gap: 3px; opacity: 0; transition: opacity .15s; }
+.grid-stack-item:hover .lane-tools { opacity: 1; }
+.lane-tools button { appearance: none; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--muted); font: 700 10px/1 var(--font); border-radius: 5px; min-width: 18px; height: 16px; padding: 0 4px; cursor: pointer; }
+.lane-tools button:hover { color: var(--fg); background: var(--surface-3); }
+.lane-legend span u.rm { text-decoration: none; color: var(--faint); font-weight: 700; padding: 0 2px; display: none; }
+.lane-legend span:hover u.rm { display: inline; }
+.lane-legend span u.rm:hover { color: var(--bad, #e5534b); }
+.ypop { min-width: 260px; }
+@media (hover: none) { .lane-legend .lane-tools { opacity: .9; } .lane-legend span u.rm { display: inline; } }
 .uplot { font-family: var(--font); }
 .u-axis { color: var(--axis); }
 .u-select { background: var(--accent-soft); }
@@ -466,3 +477,27 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
 .dbadge.ok { background: rgba(25, 158, 112, .16); color: var(--good); }
 .dbadge.warn { background: rgba(201, 133, 0, .16); color: var(--warn); }
 .drop-on { outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: 14px; }
+
+/* riepilogo del tratto: estremi e variazioni sotto ogni misura */
+.sa-ext { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 4px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sa-ext b { color: var(--fg); font-weight: 650; }
+.sa-go { appearance: none; border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline dotted; }
+/* mure e andature */
+.tk-wrap { position: absolute; inset: 0; overflow: auto; padding: 6px 10px 10px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.tk-wrap > * { flex: none; }
+.tk-wind { display: grid; gap: 4px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.tk-arrow { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 800; }
+.tk-conf { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--surface-3); color: var(--muted); }
+.tk-conf.alta { color: var(--good); } .tk-conf.bassa { color: var(--warn); }
+.tk-table td.num, .tk-table th { font-variant-numeric: tabular-nums; }
+.tk-table td.num { text-align: right; white-space: nowrap; }
+.tk-table tr.tk-first td { border-top: 1px solid var(--line-2); }
+.tk-ins { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: 13px; }
+.tk-ins li.good::marker { color: var(--good); } .tk-ins li.warn::marker { color: var(--warn); } .tk-ins li.info::marker { color: var(--accent); }
+.tk-ins li.warn { color: var(--fg); }
+/* Nacra 17 in 3D */
+.b3-box { position: absolute; inset: 0; overflow: hidden; }
+.b3-box canvas { display: block; cursor: grab; }
+.b3-box canvas:active { cursor: grabbing; }
+.b3-hud { position: absolute; left: 8px; bottom: 6px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: #fff; background: rgba(0, 0, 0, .45); padding: 4px 9px; border-radius: 8px; pointer-events: none; font-variant-numeric: tabular-nums; }
+.b3-gain { color: #ffd479; }

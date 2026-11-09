@@ -62,6 +62,8 @@ class Session {
   }
 
   async loadSource(src) {
+    // del Logger serve anche la precisione del GPS (per la qualità dei dati)
+    if (src.kind === 'iPhone' && src.columns) { const c = src.columns.find(x => x.col === 'gps_hacc_m'); if (c) c.use = true; }
     if (TRACK_KINDS.includes(src.kind)) {
       const f = await Store.file(this.path(src.file));
       const track = readTrack(src.kind, src.kind === 'FIT' ? await f.arrayBuffer() : await f.text());
@@ -70,7 +72,9 @@ class Session {
     }
     const text = await Store.readText(this.path(src.file));
     const tab = parseTable(text), cols = analyzeCols(tab);
-    return buildChannels(tab, cols, Object.assign({ baseDate: this.meta.date }, src), src.id, src.name);
+    const out = buildChannels(tab, cols, Object.assign({ baseDate: this.meta.date }, src), src.id, src.name);
+    for (const c of out) if (/:gps_hacc_m$/.test(c.id)) c.quiet = true; // serve per la qualità dei dati, non va proposto nei pannelli
+    return out;
   }
 
   /* Più registrazioni del Logger nello stesso giorno (per esempio fermata e ripartita) sono lo stesso
@@ -96,7 +100,7 @@ class Session {
       if (list.some((c, i) => i && c.t[0] < list[i - 1].t[list[i - 1].t.length - 1])) pts.sort((a, b) => a[0] - b[0]);
       const c0 = list[0];
       merged.push(makeChannel({ id: `${base}:${key}`, name: c0.name, unit: c0.unit, role: c0.role, src: base, srcName: c0.srcName,
-        t: Float64Array.from(pts, p => p[0]), v: Float64Array.from(pts, p => p[1]), dec: c0.dec }));
+        t: Float64Array.from(pts, p => p[0]), v: Float64Array.from(pts, p => p[1]), dec: c0.dec, quiet: c0.quiet }));
       pts = null;
     }
     for (const id of srcs.slice(1)) { this.srcAlias.set(id, base); for (const key of groups.keys()) this.alias.set(`${id}:${key}`, `${base}:${key}`); }
@@ -192,8 +196,13 @@ class Session {
     this.sog = this.ch(this.meta.mainSog) || (this.pos && sogs.find(c => c.src === this.pos.src)) || sogs[0] || null;
     const cogs = this.channels.filter(c => c.role === 'cog'), hdgs = this.channels.filter(c => c.role === 'hdg');
     this.cog = (this.pos && cogs.find(c => c.src === this.pos.src)) || cogs[0] || hdgs[0] || null;
+    // vento: quello indicato a mano, altrimenti quello stimato dalle rotte (se abbastanza sicuro)
     const twd = parseFloat(this.meta.twd);
-    this.channels.push(...deriveWind(this.cog, this.sog, twd));
+    this.windEst = !this.live && this.cog && this.sog ? estimateWind(this.cog, this.sog, null, null, pickChannels(this).heel) : null;
+    this.wind = isFinite(twd) ? { twd, manual: true, series: [] } : this.windEst && this.windEst.conf !== 'bassa' ? this.windEst : null;
+    this.twdAt = t => windAt(this.wind, t);
+    this._manAuto = null;
+    this.channels.push(...deriveWind(this.cog, this.sog, this.wind ? this.twdAt : NaN, !!(this.wind && this.wind.estimated)));
     this.index();
     this.range();
   }

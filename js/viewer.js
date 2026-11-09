@@ -116,7 +116,7 @@ const Viewer = {
   /* Dati arrivati dopo che il layout è stato fatto: li propongo per la dashboard */
   checkNewData(firstOpen) {
     const S = this.S, m = S.meta;
-    const usable = S.channels.filter(c => !c.derived && c.role !== 'lat' && c.role !== 'lon' && !S.meta.cameras.some(cam => cam.id === c.src)).map(c => c.id);
+    const usable = S.channels.filter(c => !c.derived && !c.quiet && c.role !== 'lat' && c.role !== 'lon' && !S.meta.cameras.some(cam => cam.id === c.src)).map(c => c.id);
     const shown = new Set(this.layoutData().flatMap(p => p.cfg.ids || []));
     if (!m.view.seen) { m.view.seen = firstOpen ? usable : [...shown]; S.save(); }
     const fresh = usable.filter(id => !m.view.seen.includes(id) && !shown.has(id));
@@ -630,17 +630,34 @@ const Viewer = {
   detectManeuvers() {
     const S = this.S;
     if (!S.cog) { toast('Per trovare le manovre servono posizioni GPS o una rotta (COG/heading).', 6000); return; }
-    const twd = parseFloat(S.meta.twd);
-    const found = detectManeuvers(S.cog, S.sog, twd);
-    let n = 0;
-    for (const f of found) {
-      if (S.meta.events.some(e => ['virata', 'strambata', 'manovra'].includes(e.type) && Math.abs(e.t - f.t) < 15000)) continue;
-      S.meta.events.push({ id: uid('e'), t: Math.round(f.t), type: f.type, note: '', auto: true });
-      n++;
-    }
-    S.meta.events.sort((a, b) => a.t - b.t); S.save();
-    this.eventsChanged();
-    toast(n ? `Trovate ${n} manovre nuove${isFinite(twd) ? '' : '. Indica la direzione del vento nella scheda dell\'uscita per distinguere virate e strambate'}.` : 'Nessuna manovra nuova trovata.', 7000);
+    const cfg = Object.assign({}, MAN_DEFAULT, S.meta.manCfg || {});
+    const ang = h('input', { type: 'number', min: 30, max: 170, step: 5, value: cfg.angle, style: { width: '80px' } });
+    const kn = h('input', { type: 'number', min: 0, max: 20, step: 0.5, value: cfg.minKn, style: { width: '80px' } });
+    const autoOld = S.meta.events.filter(e => e.auto && ['virata', 'strambata', 'manovra'].includes(e.type) && !e.note);
+    const redo = h('input', { type: 'checkbox', checked: autoOld.length > 0 });
+    const w = S.wind;
+    modal({ title: 'Trova manovre', body: h('div', { style: { display: 'grid', gap: '12px' } },
+      h('p', { class: 'muted', style: { margin: 0 } }, 'Conta come manovra un cambio di rotta rapido con la barca che naviga prima e dopo. Le soste con la prua al vento tra una prova e l\'altra non contano, perché lì la barca è lenta.'),
+      h('label', { class: 'row', style: { gap: '10px' } }, 'Cambio di rotta di almeno', ang, '°'),
+      h('label', { class: 'row', style: { gap: '10px' } }, 'Velocità prima e dopo di almeno', kn, 'nodi'),
+      autoOld.length ? h('label', { class: 'row', style: { gap: '10px' } }, redo, `Rifai da capo: togli le ${autoOld.length} manovre trovate prima in automatico (quelle segnate a mano o con una nota restano)`) : null,
+      h('p', { class: 'faint small', style: { margin: 0 } }, w ? `Virata o strambata: le distinguo col vento ${w.manual ? 'indicato' : 'stimato'} (da ${Math.round(w.twd)}°).` : 'Senza vento (indicato o stimato) le manovre si chiamano solo "manovra".')),
+      actions: [{ label: 'Annulla' }, { label: 'Trova', kind: 'primary', run: () => {
+        const opt = { angle: clamp(Number(ang.value) || MAN_DEFAULT.angle, 30, 170), minKn: clamp(Number(kn.value) || 0, 0, 20) };
+        S.meta.manCfg = opt; S._manAuto = null;
+        if (redo.checked) { const ids = new Set(autoOld.map(e => e.id)); S.meta.events = S.meta.events.filter(e => !ids.has(e.id)); }
+        const found = detectManeuvers(S.cog, S.sog, S.wind ? S.twdAt : NaN, opt);
+        let n = 0;
+        for (const f of found) {
+          if (S.meta.events.some(e => ['virata', 'strambata', 'manovra'].includes(e.type) && Math.abs(e.t - f.t) < 15000)) continue;
+          S.meta.events.push({ id: uid('e'), t: Math.round(f.t), type: f.type, note: '', auto: true });
+          n++;
+        }
+        S.meta.events.sort((a, b) => a.t - b.t); S.save();
+        this.eventsChanged();
+        const kinds = ['virata', 'strambata', 'manovra'].map(k => [k, found.filter(f => f.type === k).length]).filter(x => x[1]).map(([k, c]) => `${c} ${k === 'virata' ? (c === 1 ? 'virata' : 'virate') : k === 'strambata' ? (c === 1 ? 'strambata' : 'strambate') : (c === 1 ? 'manovra' : 'manovre')}`);
+        toast(n ? `Trovate ${n} manovre${kinds.length ? ' (' + kinds.join(', ') + ')' : ''}${redo.checked ? ', rifatte da capo' : ''}.` : 'Nessuna manovra nuova trovata.', 7000);
+      } }] });
   },
 
   /* ---------- Tastiera ---------- */

@@ -243,7 +243,67 @@ class ChartPanel {
     sel.onchange = () => { this.cfg.win = sel.value === '' ? null : Number(sel.value); this.lastKey = ''; this.V.layoutChanged(); this.V.requestDraw(); };
     sel.addEventListener('mousedown', e => e.stopPropagation());
     this.winSel = sel;
-    return [sel];
+    const add = h('button', { class: 'icon-btn sz', title: 'Aggiungi un grafico sotto (stessa finestra di tempo)', 'aria-label': 'Aggiungi un grafico', style: { width: 'auto', padding: '0 5px' } }, '+ grafico');
+    add.onclick = e => { e.stopPropagation(); this.chanMenu(add, c => { const n = this.nextLaneNo(); this.moveTo(c, n); }); };
+    return [add, sel];
+  }
+  /* ---------- più grafici nello stesso pannello: aggiungere, togliere, scala Y ---------- */
+  nextLaneNo() { let n = 0; for (const o of Object.values(this.cfg.st || {})) if (o && o.lane) n = Math.max(n, o.lane); return n + 1; }
+  /* un grafico "per unità" diventa un grafico numerato, così ci si possono aggiungere linee di altre unità */
+  makeManual(lane) {
+    if (lane.key.startsWith('L')) return Number(lane.key.slice(1));
+    const n = this.nextLaneNo(), st = this.cfg.st = this.cfg.st || {}, lanes = this.cfg.lanes = this.cfg.lanes || {};
+    for (const c of lane.list) (st[c.id] = st[c.id] || {}).lane = n;
+    lanes['L' + n] = Object.assign({}, this.laneY(lane.key)); delete lanes[lane.key];
+    return n;
+  }
+  moveTo(c, n) {
+    const st = this.cfg.st = this.cfg.st || {};
+    if (!this.S.chs(this.cfg.ids).includes(c)) this.cfg.ids.push(c.id);
+    const id = this.cfg.ids.find(x => this.S.ch(x) === c) || c.id;
+    (st[id] = st[id] || {}).lane = n;
+    this.changed();
+  }
+  removeLine(c) {
+    this.cfg.ids = this.cfg.ids.filter(id => this.S.ch(id) !== c);
+    if (this.cfg.st) for (const k of Object.keys(this.cfg.st)) if (this.S.ch(k) === c) delete this.cfg.st[k];
+    this.changed();
+  }
+  changed() { this.lastKey = ''; this.build(); this.V.layoutChanged(); }
+  /* elenco delle grandezze da scegliere (raggruppate per strumento) */
+  chanMenu(anchor, pick) {
+    const items = [], groups = new Map();
+    for (const c of this.S.channels) { if (c.role === 'lat' || c.role === 'lon') continue; const g = c.srcName || 'Altro'; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(c); }
+    for (const [g, list] of groups) { items.push({ head: g }); for (const c of list) items.push({ label: `${c.name}${c.unit ? ' · ' + c.unit : ''}`, run: () => pick(c) }); }
+    if (!items.length) items.push({ label: 'Nessun dato caricato', disabled: true });
+    menu(anchor, items);
+  }
+  /* scala verticale di un grafico (o di tutti quelli del pannello) */
+  yMenu(lane, anchor) {
+    const old = $('.menu'); if (old) old.remove();
+    const L = Object.assign({}, this.laneY(lane.key));
+    const m = h('div', { class: 'menu ypop', role: 'dialog' });
+    const modes = [['window', 'Adatta alla finestra di tempo'], ['session', 'Tutta l\'uscita (fissa)'], ['sym', 'Simmetrica attorno a 0'], ['manual', 'A mano']];
+    const mn = h('input', { type: 'number', step: 'any', value: L.min ?? '', placeholder: lane.fixed ? fmtNum(lane.fixed[0], 1) : 'min', style: { width: '80px' } });
+    const mx = h('input', { type: 'number', step: 'any', value: L.max ?? '', placeholder: lane.fixed ? fmtNum(lane.fixed[1], 1) : 'max', style: { width: '80px' } });
+    const man = h('div', { class: 'row', style: { gap: '6px', padding: '2px 10px 6px 30px' }, hidden: L.mode !== 'manual' }, 'da', mn, 'a', mx);
+    const radios = modes.map(([v, l]) => { const r = h('input', { type: 'radio', name: 'ymode', value: v, checked: (L.mode || 'session') === v, onchange: () => { man.hidden = v !== 'manual'; } }); return h('label', { class: 'row', style: { gap: '8px', padding: '5px 10px', fontSize: '13px' } }, r, l); });
+    const all = h('input', { type: 'checkbox' });
+    const apply = () => {
+      const mode = m.querySelector('input[name=ymode]:checked').value;
+      const v = { mode, min: mn.value === '' ? null : Number(mn.value), max: mx.value === '' ? null : Number(mx.value) };
+      const lanes = this.cfg.lanes = this.cfg.lanes || {};
+      for (const l of all.checked ? this.lanes : [lane]) lanes[l.key] = Object.assign({}, v);
+      m.remove(); this.changed();
+    };
+    m.append(h('div', { class: 'mh' }, 'Scala verticale'), ...radios, man,
+      h('label', { class: 'row', style: { gap: '8px', padding: '6px 10px', fontSize: '13px', borderTop: '1px solid var(--line)' } }, all, 'Uguale per tutti i grafici del pannello'),
+      h('div', { class: 'row', style: { padding: '4px 6px', justifyContent: 'flex-end', gap: '6px' } }, h('button', { class: 'btn sm', onclick: () => m.remove() }, 'Annulla'), h('button', { class: 'btn sm primary', onclick: apply }, 'Applica')));
+    document.body.append(m);
+    const r = anchor.getBoundingClientRect();
+    m.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - m.offsetHeight - 8)) + 'px';
+    m.style.left = Math.max(8, Math.min(r.right - m.offsetWidth, window.innerWidth - m.offsetWidth - 8)) + 'px';
+    setTimeout(() => document.addEventListener('mousedown', function off(e) { if (!m.contains(e.target)) { m.remove(); document.removeEventListener('mousedown', off); } }), 0);
   }
   build() {
     for (const l of this.lanes) l.u && l.u.destroy();
@@ -267,11 +327,16 @@ class ChartPanel {
       lane.items = list.map((c, i) => {
         const col = lane.colors[i], d = lane.dashes[i];
         const sw = d === 'solid' ? col : `repeating-linear-gradient(90deg, ${col} 0 ${d === 'dot' ? 2 : 5}px, transparent ${d === 'dot' ? 2 : 5}px ${d === 'dot' ? 4 : 8}px)`;
-        const val = h('b'); const sp = h('span', { title: c.srcName }, h('i', { style: { background: sw } }), h('em', null, c.name), val, c.unit ? h('em', null, c.unit) : null);
+        const val = h('b'); const sp = h('span', { title: c.srcName + ' · clic: nascondi/mostra' }, h('i', { style: { background: sw } }), h('em', null, c.name), val, c.unit ? h('em', null, c.unit) : null,
+          this.S.live ? null : h('u', { class: 'rm', title: 'Togli questa linea', onclick: e => { e.stopPropagation(); this.removeLine(c); } }, '×'));
         sp.onclick = () => { const s = lane.u.series[i + 1]; lane.u.setSeries(i + 1, { show: !s.show }); sp.classList.toggle('off', !s.show); };
         lane.legend.append(sp);
         return { c, val, last: '' };
       });
+      if (!this.S.live) lane.legend.append(h('div', { class: 'lane-tools' },
+        h('button', { title: 'Aggiungi una linea a questo grafico', onclick: e => { e.stopPropagation(); this.chanMenu(e.currentTarget, c => this.moveTo(c, this.makeManual(lane))); } }, '+'),
+        h('button', { title: 'Scala verticale di questo grafico', onclick: e => { e.stopPropagation(); this.yMenu(lane, e.currentTarget); } }, 'Y'),
+        groups.size > 1 ? h('button', { title: 'Togli questo grafico', onclick: e => { e.stopPropagation(); this.cfg.ids = this.cfg.ids.filter(id => !lane.list.includes(this.S.ch(id))); this.changed(); } }, '×') : null));
       this.lanes.push(lane);
     }
     requestAnimationFrame(() => this.makePlots());
@@ -320,6 +385,7 @@ class ChartPanel {
         scales: { x: { time: true }, y: { range: (u, a, b) => {
           const L = this.laneY(lane.key);
           if (L.mode === 'manual' && isFinite(L.min) && isFinite(L.max) && L.max > L.min) return [L.min, L.max];
+          if (L.mode === 'sym' && !lane.circ) { const m = Math.max(Math.abs(a ?? 0), Math.abs(b ?? 0)) * 1.08 || 1; return [-m, m]; }
           return L.mode === 'window' && !lane.circ ? autoRange(a, b) : lane.fixed; } } },
         axes: [
           { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, size: 4 }, size: Math.round(24 * sz), space: Math.round(90 * sz), font: fpx + 'px ' + cs.getPropertyValue('--font'), values: (u, sp) => sp.map(s => { const d = new Date(s * 1000); const w = u.scales.x.max - u.scales.x.min; return w > 900 ? `${p2(d.getHours())}:${p2(d.getMinutes())}` : `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; }) },
@@ -481,7 +547,7 @@ class ChartPanel {
         const mn = h('input', { type: 'number', step: 'any', value: L.min ?? '', placeholder: ph[0] != null ? fmtNum(ph[0], 1) : 'min', style: { width: '80px' }, oninput: e => { L.min = e.target.value === '' ? null : Number(e.target.value); } });
         const mx = h('input', { type: 'number', step: 'any', value: L.max ?? '', placeholder: ph[1] != null ? fmtNum(ph[1], 1) : 'max', style: { width: '80px' }, oninput: e => { L.max = e.target.value === '' ? null : Number(e.target.value); } });
         const man = h('span', { class: 'row', style: { gap: '6px' }, hidden: L.mode !== 'manual' }, 'da', mn, 'a', mx);
-        const mode = h('select', { onchange: e => { L.mode = e.target.value; man.hidden = L.mode !== 'manual'; } }, [['session', 'tutta l\'uscita'], ['window', 'adatta alla finestra'], ['manual', 'a mano']].map(([v, l]) => h('option', { value: v, selected: L.mode === v }, l)));
+        const mode = h('select', { onchange: e => { L.mode = e.target.value; man.hidden = L.mode !== 'manual'; } }, [['session', 'tutta l\'uscita'], ['window', 'adatta alla finestra'], ['sym', 'simmetrica attorno a 0'], ['manual', 'a mano']].map(([v, l]) => h('option', { value: v, selected: L.mode === v }, l)));
         yBox.append(h('div', { class: 'row', style: { gap: '8px', fontSize: '13px' } }, h('b', { style: { minWidth: '150px' } }, laneName(key, list)), h('span', { class: 'faint small', style: { minWidth: '120px' } }, list.map(c => c.name).join(', ')), mode, man));
       }
       if (!yBox.children.length) yBox.append(h('span', { class: 'muted small' }, 'Scegli prima le linee qui sotto.'));
@@ -496,7 +562,7 @@ class ChartPanel {
       chans.forEach(c => {
         const o = st[c.id] || (st[c.id] = {});
         const idx = all.includes(c) ? all.indexOf(c) : chans.indexOf(c);
-        const lane = h('select', { onchange: e => { o.lane = e.target.value ? Number(e.target.value) : null; drawY(); } }, [['', 'automatico (per unità)'], [1, 'Grafico 1'], [2, 'Grafico 2'], [3, 'Grafico 3'], [4, 'Grafico 4']].map(([v, l]) => h('option', { value: v, selected: String(o.lane || '') === String(v) }, l)));
+        const lane = h('select', { onchange: e => { o.lane = e.target.value ? Number(e.target.value) : null; drawY(); } }, [['', 'automatico (per unità)'], ...[1, 2, 3, 4, 5, 6, 7, 8].map(n => [n, 'Grafico ' + n])].map(([v, l]) => h('option', { value: v, selected: String(o.lane || '') === String(v) }, l)));
         const color = h('input', { type: 'color', value: o.color || seriesColor(idx), oninput: e => { o.color = e.target.value; } });
         const dash = h('select', { onchange: e => { o.dash = e.target.value; } }, [['solid', 'continua'], ['dash', 'tratteggiata'], ['dot', 'a puntini']].map(([v, l]) => h('option', { value: v, selected: (o.dash || 'solid') === v }, l)));
         const w = h('select', { onchange: e => { o.lw = e.target.value ? Number(e.target.value) : null; } }, [['', 'come le altre'], [1, 'sottile'], [1.6, 'normale'], [2.5, 'spessa'], [3.5, 'molto spessa']].map(([v, l]) => h('option', { value: v, selected: String(o.lw || '') === String(v) }, l)));
@@ -921,14 +987,17 @@ class CoveragePanel {
   build() {
     const S = this.S, cv = this.cov = coverage(S);
     this.el.textContent = '';
+    const Q = this.Q = dataQuality(S);
+    const qSpans = Q ? Q.issues.filter(r => r.why !== 'nodata') : [];
     const rows = [...cv.cams.map(c => ({ label: '🎥 ' + c.name, spans: c.spans, color: c.color })), ...cv.data.map(d => ({ label: '📈 ' + d.name, spans: d.spans, color: 'var(--muted)' })),
-      { label: 'Video + dati', spans: cv.both, color: 'var(--good)', strong: true }];
+      { label: 'Video + dati', spans: cv.both, color: 'var(--good)', strong: true },
+      Q ? { label: '⚠︎ Dati dubbi', spans: qSpans.map(r => [r.a, r.b, r.bad ? 'var(--bad, #e5534b)' : 'var(--warn, #e0a33a)', r.text]), color: 'var(--warn, #e0a33a)', title: 'Rosso = dati mancanti, arancione = dati poco affidabili' } : null].filter(Boolean);
     this.lanes = h('div', { style: { position: 'relative', padding: '6px 8px 2px', display: 'grid', gap: '3px', cursor: 'pointer' } });
     const X = t => ((t - S.t0) / ((S.t1 - S.t0) || 1) * 100).toFixed(3) + '%';
     for (const r of rows) {
       const lane = h('div', { class: 'cover-lane', style: { height: r.strong ? '12px' : '8px' } });
-      for (const [a, b] of r.spans) lane.append(h('i', { style: { left: X(a), width: `max(2px, calc(${X(b)} - ${X(a)}))`, background: r.color } }));
-      this.lanes.append(h('div', { style: { display: 'grid', gridTemplateColumns: '110px 1fr', gap: '8px', alignItems: 'center', fontSize: '11px' } },
+      for (const [a, b, col, tip] of r.spans) lane.append(h('i', { style: { left: X(a), width: `max(2px, calc(${X(b)} - ${X(a)}))`, background: col || r.color }, title: tip ? `${fmtClock(a)}–${fmtClock(b)} · ${tip}` : null }));
+      this.lanes.append(h('div', { style: { display: 'grid', gridTemplateColumns: '110px 1fr', gap: '8px', alignItems: 'center', fontSize: '11px' }, title: r.title || null },
         h('span', { style: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: r.strong ? 700 : 500 } }, r.label), lane));
     }
     this.cursor = h('div', { style: { position: 'absolute', top: '2px', bottom: '0', width: '2px', background: 'var(--cursor)', pointerEvents: 'none' } });
@@ -948,6 +1017,16 @@ class CoveragePanel {
       cv.both.forEach(([a, b], i) => list.append(h('div', { class: 'row', style: { fontSize: '12px', gap: '6px' } },
         h('span', { class: 'dot', style: { background: 'var(--good)' } }), h('span', { class: 'num' }, `${fmtClock(a)} – ${fmtClock(b)}`), h('span', { class: 'faint' }, fmtDur(b - a)), h('div', { class: 'sp' }),
         h('button', { class: 'btn sm', onclick: () => this.V.seek(a + 1000) }, 'Vai'))));
+    }
+    // qualità dei dati: percentuale affidabile e i problemi più lunghi (clic = vai)
+    if (Q) {
+      list.append(h('div', { class: 'stat ' + (Q.good >= 0.98 ? 'good' : Q.good >= 0.9 ? '' : 'warn'), style: { marginTop: '4px' } }, 'Qualità: ' + qualityText(Q)));
+      const top = Q.issues.filter(r => r.why !== 'nodata').sort((x, y) => (y.bad - x.bad) || (y.b - y.a) - (x.b - x.a)).slice(0, 8).sort((x, y) => x.a - y.a);
+      for (const r of top) list.append(h('div', { class: 'row', style: { fontSize: '12px', gap: '6px' } },
+        h('span', { class: 'dot', style: { background: r.bad ? 'var(--bad, #e5534b)' : 'var(--warn, #e0a33a)' } }), h('span', { class: 'num' }, `${fmtClock(r.a)} – ${fmtClock(r.b)}`), h('span', null, r.text), h('div', { class: 'sp' }),
+        h('button', { class: 'btn sm', onclick: () => this.V.seek(r.a) }, 'Vai')));
+      const gaps = Q.gaps.filter(g => g.a > S.t0 + 1000 && g.b < S.t1 - 1000);
+      if (gaps.length) list.append(h('div', { class: 'faint small' }, `Tra le registrazioni: ${gaps.map(g => `${fmtClock(g.a)}–${fmtClock(g.b)}`).join(', ')} senza dati (registrazione ferma).`));
     }
     this.el.append(list);
   }

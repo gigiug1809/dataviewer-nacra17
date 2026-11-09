@@ -387,11 +387,13 @@ function deriveFromTrack(lat, lon, srcId, srcName) {
 }
 
 /* Angolo al vento e VMG quando è nota la direzione del vento */
-function deriveWind(hdgCh, sogCh, twd) {
-  if (!hdgCh || !isFinite(twd)) return [];
+// twd: numero (vento indicato a mano) oppure funzione dell'ora (vento stimato, che può girare)
+function deriveWind(hdgCh, sogCh, twd, est = false) {
+  const W = typeof twd === 'function' ? twd : () => twd;
+  if (!hdgCh || !hdgCh.t.length || !isFinite(W(hdgCh.t[0]))) return [];
   const t = hdgCh.t, twa = new Float64Array(t.length);
-  for (let i = 0; i < t.length; i++) twa[i] = angDiff(hdgCh.v[i], twd);
-  const out = [makeChannel({ id: 'calc:twa', name: 'Angolo al vento (TWA)', unit: '°', role: 'twa', src: 'calc', srcName: 'Calcolati', t, v: twa, dec: 0, derived: true })];
+  for (let i = 0; i < t.length; i++) twa[i] = angDiff(hdgCh.v[i], W(t[i]));
+  const out = [makeChannel({ id: 'calc:twa', name: est ? 'Angolo al vento (TWA, vento stimato)' : 'Angolo al vento (TWA)', unit: '°', role: 'twa', src: 'calc', srcName: 'Calcolati', t, v: twa, dec: 0, derived: true })];
   if (sogCh) {
     const vmg = new Float64Array(t.length);
     for (let i = 0; i < t.length; i++) vmg[i] = interp(sogCh, t[i]) * Math.cos(twa[i] * Math.PI / 180);
@@ -402,8 +404,13 @@ function deriveWind(hdgCh, sogCh, twd) {
 }
 
 /* ---------- Riconoscimento delle manovre ---------- */
-// Cerca i cambi di rotta rapidi (più di 55° in 12 s) con la barca in movimento.
-function detectManeuvers(cog, sog, twd) {
+// Cerca i cambi di rotta rapidi con la barca in movimento: la rotta deve cambiare di almeno `angle` gradi
+// (default 65°) e la barca deve andare ad almeno `minKn` nodi prima e dopo (default 5): così non contano
+// le soste con la prua al vento tra una prova e l'altra. twd: numero o funzione dell'ora.
+const MAN_DEFAULT = { angle: 65, minKn: 5 };
+function detectManeuvers(cog, sog, twd, opt = {}) {
+  const ANG = Number(opt.angle) || MAN_DEFAULT.angle, MIN = opt.minKn != null && opt.minKn !== '' ? Number(opt.minKn) : MAN_DEFAULT.minKn;
+  const twdAt = typeof twd === 'function' ? twd : () => twd;
   if (!cog || cog.t.length < 30) return [];
   const t0 = cog.t[0], t1 = cog.t[cog.t.length - 1], step = 1000;
   const n = Math.floor((t1 - t0) / step);
@@ -412,21 +419,22 @@ function detectManeuvers(cog, sog, twd) {
   for (let k = W; k < n - W; k++) {
     if (isFinite(H[k - W]) && isFinite(H[k + W])) turn[k] = angDiff(H[k + W], H[k - W]);
   }
-  const found = [];
+  const found = [], hi = Math.max(40, ANG - 10), lo = Math.max(30, ANG - 25);
   let k = W;
   while (k < n - W) {
-    if (Math.abs(turn[k]) > 55) {
+    if (Math.abs(turn[k]) > hi) {
       let best = k, j = k;
-      while (j < n - W && Math.abs(turn[j]) > 40) { if (Math.abs(turn[j]) > Math.abs(turn[best])) best = j; j++; }
+      while (j < n - W && Math.abs(turn[j]) > lo) { if (Math.abs(turn[j]) > Math.abs(turn[best])) best = j; j++; }
       const before = avgAng(H, best - 20, best - 8), after = avgAng(H, best + 8, best + 20);
-      const sIn = S ? avgArr(S, best - 15, best - 5) : NaN;
-      if (isFinite(before) && isFinite(after) && Math.abs(angDiff(after, before)) > 50 && (!S || sIn > 3)) {
+      const sIn = S ? avgArr(S, best - 15, best - 5) : NaN, sOut = S ? avgArr(S, best + 8, best + 20) : NaN;
+      if (isFinite(before) && isFinite(after) && Math.abs(angDiff(after, before)) >= ANG && (!S || (sIn >= MIN && sOut >= MIN))) {
         let type = 'manovra';
-        if (isFinite(twd)) {
-          const a = Math.abs(angDiff(before, twd)), b = Math.abs(angDiff(after, twd));
+        const w = twdAt(t0 + best * step);
+        if (isFinite(w)) {
+          const a = Math.abs(angDiff(before, w)), b = Math.abs(angDiff(after, w));
           type = a < 90 && b < 90 ? 'virata' : a > 90 && b > 90 ? 'strambata' : 'manovra';
         }
-        found.push({ t: t0 + best * step, type, from: before, to: after });
+        found.push({ t: t0 + best * step, type, from: before, to: after, sIn, sOut });
       }
       k = Math.max(j, best + 20);
     } else k++;
@@ -443,12 +451,16 @@ function maneuverMetrics(sog, t) {
   const sMin = stats(sog, t - 5000, t + 10000).min;
   const sOut = stats(sog, t + 10000, t + 20000).mean;
   if (!isFinite(sIn)) return null;
-  let lost = 0, rec = NaN;
-  for (let x = t - 5000; x <= t + 20000; x += 500) {
+  // rec: quanti secondi la barca resta sotto il 90% della velocità d'ingresso
+  let lost = 0, below = NaN, back = NaN;
+  for (let x = t - 8000; x <= t + 25000; x += 500) {
     const v = interp(sog, x);
-    if (isFinite(v)) lost += Math.max(0, sIn - v) / KN * 0.5;
-    if (!isFinite(rec) && x > t && v >= sIn * 0.9) rec = (x - t) / 1000;
+    if (!isFinite(v)) continue;
+    if (x >= t - 5000 && x <= t + 20000) lost += Math.max(0, sIn - v) / KN * 0.5;
+    if (!isFinite(below) && v < sIn * 0.9) below = x;
+    if (isFinite(below) && !isFinite(back) && x >= t && v >= sIn * 0.9) back = x;
   }
+  const rec = isFinite(below) && isFinite(back) ? (back - below) / 1000 : NaN;
   return { sIn, sMin, sOut, lost, rec };
 }
 
