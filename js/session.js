@@ -233,7 +233,7 @@ async function probeClip(file) {
   const clip = {
     file: file.name, size: file.size, duration: info.duration, w: info.width, h: info.height, fps: Math.round(info.fps * 100) / 100,
     codec: info.codec, created: info.created, device: device || info.model || '', gpmd: !!info.gpmd, samsung: !!info.samsung,
-    appleStart: info.appleStart || null, gpsStart, mtime: file.lastModified,
+    appleStart: info.appleStart || null, software: info.software || '', gpsStart, mtime: file.lastModified,
     gopro: m ? { chapter: +m[2], number: m[3] } : null
   };
   Object.assign(clip, clipStartFromMeta(clip));
@@ -257,6 +257,8 @@ function nameTime(name) {
 function clipStartFromMeta(c) {
   const dur = (c.duration || 0) * 1000, nt = c.gopro ? null : nameTime(c.file.split('/').pop());
   if (c.gpsStart) return { start: c.gpsStart, startSrc: 'gps' };
+  // video girato dal Logger: ora del primo fotogramma, dallo stesso orologio dei dati (esatta)
+  if (c.appleStart && c.software === 'N17 Logger') return { start: c.appleStart, startSrc: 'logger' };
   if (c.appleStart) return { start: c.appleStart, startSrc: 'apple' };
   if (c.created) {
     const end = c.created - dur;
@@ -281,13 +283,13 @@ function chainChapters(clips) {
     list.sort((a, b) => a.gopro.chapter - b.gopro.chapter);
     for (let i = 1; i < list.length; i++) {
       const prev = list[i - 1], c = list[i];
-      if (c.startSrc === 'gps' || c.startSrc === 'manual') continue;
+      if (c.startSrc === 'gps' || c.startSrc === 'logger' || c.startSrc === 'manual') continue;
       if (c.gopro.chapter === prev.gopro.chapter + 1) { c.start = prev.start + prev.duration * 1000; c.startSrc = 'chain'; }
     }
   }
   clips.sort((a, b) => a.start - b.start);
 }
-const START_SRC_LABEL = { gps: 'GPS della GoPro (esatta)', apple: 'metadati iPhone', 'mvhd-end': 'fine registrazione meno la durata', filename: 'nome del file', mvhd: 'ora registrata nel file', mtime: 'data di modifica del file', chain: 'segue il capitolo precedente', manual: 'impostata a mano' };
+const START_SRC_LABEL = { gps: 'GPS della GoPro (esatta)', logger: 'N17 Logger (esatta, stesso orologio dei dati)', apple: 'metadati iPhone', 'mvhd-end': 'fine registrazione meno la durata', filename: 'nome del file', mvhd: 'ora registrata nel file', mtime: 'data di modifica del file', chain: 'segue il capitolo precedente', manual: 'impostata a mano' };
 
 /* ---------- Copertura: dove ci sono video, dove ci sono dati, dove ci sono entrambi ---------- */
 function mergeSpans(list, gap = 0) {

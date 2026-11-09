@@ -204,13 +204,13 @@ const Editor = {
         h('td', { class: 'num' }, fmtDur(cl.duration * 1000)),
         h('td', { class: 'stat' }, `${cl.w}×${cl.h} · ${fmtNum(cl.fps, cl.fps % 1 ? 2 : 0)} fps · ${cl.codec === 'hvc1' || cl.codec === 'hev1' ? 'HEVC' : cl.codec === 'avc1' ? 'H.264' : cl.codec}`),
         h('td', null, tIn),
-        h('td', { class: 'stat ' + (cl.startSrc === 'gps' ? 'good' : cl.startSrc === 'mtime' ? 'warn' : '') }, START_SRC_LABEL[cl.startSrc] || cl.startSrc),
+        h('td', { class: 'stat ' + (cl.startSrc === 'gps' || cl.startSrc === 'logger' ? 'good' : cl.startSrc === 'mtime' ? 'warn' : '') }, START_SRC_LABEL[cl.startSrc] || cl.startSrc),
         h('td', null, mv),
         h('td', null, h('button', { class: 'icon-btn', title: 'Togli dall\'uscita', 'aria-label': 'Togli dall\'uscita', onclick: () => { cam.clips = cam.clips.filter(c => c !== cl); if (!cam.clips.length) m.cameras = m.cameras.filter(c => c !== cam); this.save(); this.renderVideo(); this.renderCheck(); } }, '✕'))));
     }
     tb.append(body);
     card.append(h('div', { class: 'tbl-wrap' }, tb));
-    if (cam.clips.length && !cam.clips.some(c => c.startSrc === 'gps')) card.append(h('p', { class: 'stat' }, 'Senza GPS nella camera l\'ora viene dall\'orologio della GoPro: di solito è giusta entro qualche secondo. La rifinitura si fa nel viewer con lo strumento di sincronizzazione (⏱ sul video).'));
+    if (cam.clips.length && !cam.clips.some(c => c.startSrc === 'gps' || c.startSrc === 'logger')) card.append(h('p', { class: 'stat' }, 'Senza GPS nella camera l\'ora viene dall\'orologio della GoPro: di solito è giusta entro qualche secondo. La rifinitura si fa nel viewer con lo strumento di sincronizzazione (⏱ sul video).'));
     return card;
   },
   clipStartLocal(cam, cl) { const d = new Date(cl.start + (Number(cam.offset) || 0)); return `${ymdOf(d.getTime())}T${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; },

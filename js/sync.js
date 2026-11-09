@@ -119,6 +119,7 @@ async function autoSync(folder, meta, { force = false, onStep } = {}) {
   if (changed) { S = new Session(folder, meta); await S.load(); }
   for (const cam of meta.cameras) {
     if (cam.clips.every(c => c.startSrc === 'gps')) { report.push({ what: cam.name, ok: true, text: 'ora presa dal GPS della GoPro: già esatta' }); continue; }
+    if (cam.clips.every(c => c.startSrc === 'logger')) { report.push({ what: cam.name, ok: true, text: 'video del Logger: già allineato ai dati' }); continue; }
     if (!force && cam.sync && cam.sync.method === 'manual') { report.push({ what: cam.name, ok: true, text: 'sincronizzata a mano: non la tocco' }); continue; }
     if (!force && cam.sync && cam.sync.method === 'gyro') { report.push({ what: cam.name, ok: true, text: `sincronizzata con il giroscopio (affidabilità ${cam.sync.conf})` }); continue; }
     onStep && onStep(`Confronto il giroscopio di ${cam.name} con le virate…`);

@@ -125,6 +125,7 @@
           const v = new TextDecoder().decode(u8.subarray(d.data + 8, d.end));
           if (names[idx] === 'com.apple.quicktime.creationdate') { const t = Date.parse(v.replace(/([+-]\d\d)(\d\d)$/, '$1:$2')); if (isFinite(t)) info.appleStart = t; }
           if (names[idx] === 'com.apple.quicktime.model') info.model = v;
+          if (names[idx] === 'com.apple.quicktime.software') info.software = v;
         }
       }
     }

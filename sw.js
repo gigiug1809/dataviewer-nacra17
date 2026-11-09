@@ -2,7 +2,7 @@
 // I file dell'app si scaricano prima dalla rete (così gli aggiornamenti arrivano subito)
 // e, se la rete manca o è lenta, dalla cache. Le mappe di sfondo non vanno in cache.
 // I video e i dati non passano mai di qui: restano sul disco del Mac.
-const CACHE = 'n17-dataviewer-v22';
+const CACHE = 'n17-dataviewer-v23';
 const FILES = ['./', './index.html', './css/app.css',
   './js/util.js', './js/freegrid.js', './js/mp4.js', './js/parse.js', './js/tracks.js', './js/store.js', './js/session.js', './js/sync.js', './js/mqtt.js', './js/live.js', './js/dash.js', './js/demo.js', './js/home.js', './js/editor.js', './js/panels.js', './js/analysis.js', './js/quadro.js', './js/viewer.js', './js/app.js',
   './lib/uPlot.iife.min.js', './lib/uPlot.min.css', './lib/leaflet.js', './lib/leaflet.css', './lib/images/layers.png', './lib/images/layers-2x.png', './manifest.json', './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png'];
