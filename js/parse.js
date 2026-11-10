@@ -386,20 +386,42 @@ function deriveFromTrack(lat, lon, srcId, srcName) {
   return out;
 }
 
-/* Angolo al vento e VMG quando è nota la direzione del vento */
-// twd: numero (vento indicato a mano) oppure funzione dell'ora (vento stimato, che può girare)
-function deriveWind(hdgCh, sogCh, twd, est = false) {
-  const W = typeof twd === 'function' ? twd : () => twd;
-  if (!hdgCh || !hdgCh.t.length || !isFinite(W(hdgCh.t[0]))) return [];
-  const t = hdgCh.t, twa = new Float64Array(t.length);
-  for (let i = 0; i < t.length; i++) twa[i] = angDiff(hdgCh.v[i], W(t[i]));
-  const out = [makeChannel({ id: 'calc:twa', name: est ? 'Angolo al vento (TWA, vento stimato)' : 'Angolo al vento (TWA)', unit: '°', role: 'twa', src: 'calc', srcName: 'Calcolati', t, v: twa, dec: 0, derived: true })];
-  if (sogCh) {
-    const vmg = new Float64Array(t.length);
-    for (let i = 0; i < t.length; i++) vmg[i] = interp(sogCh, t[i]) * Math.cos(twa[i] * Math.PI / 180);
-    const keep = [...vmg.keys()].filter(i => isFinite(vmg[i]));
-    out.push(makeChannel({ id: 'calc:vmg', name: 'VMG', unit: 'kn', role: 'other', src: 'calc', srcName: 'Calcolati', t: Float64Array.from(keep, i => t[i]), v: Float64Array.from(keep, i => vmg[i]), dec: 1, derived: true }));
+/* direzione smussata: media circolare su ±half ms, su una griglia regolare (NaN dove i valori sono sparpagliati) */
+function smoothDir(ch, t0, step, n, half) {
+  const T = ch.t, V = ch.v, out = new Float64Array(n).fill(NaN);
+  let lo = idxAt(T, t0 - half), hi = lo, sx = 0, sy = 0, c = 0;
+  for (let k = 0; k < n; k++) {
+    const t = t0 + k * step;
+    while (hi < T.length && T[hi] <= t + half) { const r = V[hi] * Math.PI / 180; if (isFinite(r)) { sx += Math.cos(r); sy += Math.sin(r); c++; } hi++; }
+    while (lo < hi && T[lo] < t - half) { const r = V[lo] * Math.PI / 180; if (isFinite(r)) { sx -= Math.cos(r); sy -= Math.sin(r); c--; } lo++; }
+    if (c >= 1 && Math.hypot(sx, sy) / c > 0.3) out[k] = (Math.atan2(sy, sx) * 180 / Math.PI + 360) % 360;
   }
+  return out;
+}
+/* Angolo al vento (TWA), VMG e direzione del vento, quando il vento è noto (indicato o stimato).
+   - TWA dalla prua (bussola del telefono, 25 al secondo) smussata su 2 s: è dove punta la barca. La rotta GPS
+     nelle virate e a bassa velocità non lo è (la barca scivola di lato, il GPS è in ritardo) e faceva picchi finti.
+     Senza bussola affidabile si usa la rotta GPS smussata su 3 s. Positivo = vento da dritta (mure a dritta).
+   - VMG dalla rotta GPS smussata (è la velocità verso il vento sul fondo).
+   twd: numero (vento indicato a mano) oppure funzione dell'ora (vento stimato, che può girare). */
+function deriveWind(dirCh, cogCh, sogCh, twd, est = false) {
+  const W = typeof twd === 'function' ? twd : () => twd;
+  if (!dirCh || !dirCh.t.length || !isFinite(W(dirCh.t[0]))) return [];
+  const step = 500, t0 = Math.ceil(dirCh.t[0] / step) * step, t1 = dirCh.t[dirCh.t.length - 1], n = Math.max(0, Math.floor((t1 - t0) / step) + 1);
+  const H = smoothDir(dirCh, t0, step, n, dirCh.step < 500 ? 1000 : 1500);
+  const T = [], A = [];
+  for (let k = 0; k < n; k++) { if (!isFinite(H[k])) continue; const t = t0 + k * step; T.push(t); A.push(angDiff(W(t), H[k])); }
+  const out = [];
+  if (T.length > 2) out.push(makeChannel({ id: 'calc:twa', name: est ? 'Angolo al vento (TWA, vento stimato)' : 'Angolo al vento (TWA)', unit: '°', role: 'twa', src: 'calc', srcName: 'Calcolati', t: Float64Array.from(T), v: Float64Array.from(A), dec: 0, derived: true }));
+  if (sogCh && cogCh && cogCh.t.length) {
+    const c0 = Math.ceil(cogCh.t[0] / 1000) * 1000, m = Math.max(0, Math.floor((cogCh.t[cogCh.t.length - 1] - c0) / 1000) + 1);
+    const C = smoothDir(cogCh, c0, 1000, m, 2000), VT = [], VV = [];
+    for (let k = 0; k < m; k++) { const t = c0 + k * 1000, v = interp(sogCh, t); if (!isFinite(C[k]) || !isFinite(v)) continue; VT.push(t); VV.push(v * Math.cos(angDiff(C[k], W(t)) * Math.PI / 180)); }
+    if (VT.length > 2) out.push(makeChannel({ id: 'calc:vmg', name: 'VMG', unit: 'kn', role: 'other', src: 'calc', srcName: 'Calcolati', t: Float64Array.from(VT), v: Float64Array.from(VV), dec: 1, derived: true }));
+  }
+  // direzione del vento nel tempo (costante se indicata a mano)
+  const WT = [], WV = []; for (let t = t0; t <= t1; t += 10000) { const w = W(t); if (isFinite(w)) { WT.push(t); WV.push(w); } }
+  if (WT.length > 1) out.push(makeChannel({ id: 'calc:twd', name: est ? 'Direzione vento (stimata)' : 'Direzione vento (indicata)', unit: '°', role: 'twd', src: 'calc', srcName: 'Calcolati', t: Float64Array.from(WT), v: Float64Array.from(WV), dec: 0, derived: true }));
   return out;
 }
 

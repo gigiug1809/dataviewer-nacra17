@@ -834,7 +834,7 @@ class NumbersPanel {
 class EventsPanel {
   constructor(V, cfg) {
     this.V = V; this.cfg = cfg; this.S = V.S;
-    this.q = ''; this.type = '';
+    this.q = ''; this.type = ''; this.sel = new Set();
     this.el = h('div', { style: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' } });
     const search = h('input', { type: 'search', placeholder: 'Cerca nelle note…' });
     search.addEventListener('input', () => { this.q = search.value.toLowerCase(); this.render(); });
@@ -842,6 +842,10 @@ class EventsPanel {
     tsel.addEventListener('change', () => { this.type = tsel.value; this.render(); });
     this.el.append(h('div', { class: 'ev-tools' }, search, tsel,
       h('button', { class: 'btn sm', title: 'Trova virate e strambate dalla rotta GPS', onclick: () => this.V.detectManeuvers() }, 'Trova manovre'),
+      this.cmpBtn = h('button', { class: 'btn sm', title: 'Confronta i tratti spuntati (o scegli quali)', onclick: () => {
+        const chosen = this.S.meta.events.filter(e => this.sel.has(e.id) && e.type === 'tratto' && e.t2 != null);
+        if (chosen.length >= 2) showCompare(this.V, chosen); else pickSegmentsToCompare(this.V, [...this.sel]);
+      } }, 'Confronta tratti'),
       h('button', { class: 'btn sm', title: 'Scarica gli eventi in CSV', onclick: () => this.exportCSV() }, 'CSV')));
     this.listBox = h('div', { style: { flex: 1, position: 'relative', minHeight: 0 } });
     this.list = h('div', { class: 'ev-list' });
@@ -869,8 +873,10 @@ class EventsPanel {
       const et = EVT[ev.type] || { label: ev.type };
       const isMan = ev.type === 'virata' || ev.type === 'strambata' || ev.type === 'manovra';
       const mm = isMan && sog ? maneuverMetrics(sog, ev.t) : null;
+      const pick = ev.type === 'tratto' && ev.t2 != null ? h('input', { type: 'checkbox', class: 'ev-pick', title: 'Spunta per confrontare', checked: this.sel.has(ev.id),
+        onclick: e => e.stopPropagation(), onchange: e => { if (e.target.checked) this.sel.add(ev.id); else this.sel.delete(ev.id); this.cmpLabel(); } }) : null;
       const tr = h('tr', { onclick: () => { this.V.seek(ev.t - this.V.preroll); }, ondblclick: () => this.V.editEvent(ev) },
-        h('td', null, fmtClock(ev.t)),
+        h('td', null, pick, fmtClock(ev.t)),
         h('td', null, h('span', { class: 'chip' }, h('span', { class: 'dot', style: { background: eventColor(ev.type) } }), et.label)),
         h('td', { class: 'note' }, ev.note || (ev.auto ? h('span', { class: 'faint' }, 'trovata in automatico') : ''), ev.type === 'tratto' ? [h('span', { class: 'faint' }, ` · ${ev.t2 ? fmtDur(ev.t2 - ev.t) : 'in corso'} `), ev.t2 ? h('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); showRangeAnalysis(this.V, ev.t, ev.t2, ev.note || 'Tratto'); } }, 'Analizza') : null] : null),
         man.length ? [h('td', null, mm ? fmtNum(mm.sIn, 1) : ''), h('td', null, mm ? fmtNum(mm.sMin, 1) : ''), h('td', null, mm ? fmtNum(mm.sOut, 1) : ''), h('td', null, mm ? fmtNum(mm.lost, 0) : '')] : null,
@@ -890,6 +896,15 @@ class EventsPanel {
       this.list.append(sum);
     }
     this.curRow = null;
+    this.cmpLabel();
+  }
+  cmpLabel() {
+    if (!this.cmpBtn) return;
+    const ids = new Set(this.S.meta.events.filter(e => e.type === 'tratto' && e.t2 != null).map(e => e.id));
+    for (const id of [...this.sel]) if (!ids.has(id)) this.sel.delete(id);
+    this.cmpBtn.hidden = ids.size < 2;
+    this.cmpBtn.textContent = this.sel.size >= 2 ? `Confronta (${this.sel.size})` : 'Confronta tratti';
+    this.cmpBtn.classList.toggle('primary', this.sel.size >= 2);
   }
   eventsChanged() { this.render(); }
   update(t) {

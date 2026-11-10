@@ -202,7 +202,20 @@ class Session {
     this.wind = isFinite(twd) ? { twd, manual: true, series: [] } : this.windEst && this.windEst.conf !== 'bassa' ? this.windEst : null;
     this.twdAt = t => windAt(this.wind, t);
     this._manAuto = null;
-    this.channels.push(...deriveWind(this.cog, this.sog, this.wind ? this.twdAt : NaN, !!(this.wind && this.wind.estimated)));
+    // per l'angolo al vento uso la bussola del telefono se, navigando dritti, va d'accordo con la rotta GPS
+    const compass = this.channels.find(c => c.role === 'hdg' && !c.derived);
+    let dirCh = this.cog;
+    if (compass && this.cog && this.sog) {
+      const d = [];
+      for (let t = this.cog.t[0] + 5000; t < this.cog.t[this.cog.t.length - 1]; t += 5000) {
+        const v = interp(this.sog, t), a = interp(this.cog, t), a2 = interp(this.cog, t - 5000), b = interp(compass, t);
+        if (v > 6 && isFinite(a) && isFinite(a2) && isFinite(b) && Math.abs(angDiff(a, a2)) < 6) d.push(Math.abs(angDiff(a, b)));
+      }
+      d.sort((x, y) => x - y);
+      if (d.length >= 30 && d[d.length >> 1] < 12) dirCh = compass;
+    }
+    this.twaFrom = dirCh && dirCh === compass ? 'bussola' : 'rotta GPS';
+    this.channels.push(...deriveWind(dirCh, this.cog, this.sog, this.wind ? this.twdAt : NaN, !!(this.wind && this.wind.estimated)));
     this.index();
     this.range();
   }

@@ -501,3 +501,30 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
 .b3-box canvas:active { cursor: grabbing; }
 .b3-hud { position: absolute; left: 8px; bottom: 6px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: #fff; background: rgba(0, 0, 0, .45); padding: 4px 9px; border-radius: 8px; pointer-events: none; font-variant-numeric: tabular-nums; }
 .b3-gain { color: #ffd479; }
+
+/* confronto dei tratti */
+.modal.wide:has(.cmp) { width: min(1100px, 100%); }
+.cmp { display: grid; gap: 12px; }
+.cmp-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+.cmp-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+.cmp-legend i, .cmp-sw, .cmp-rb-name i { display: inline-block; width: 12px; height: 4px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.cmp-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cmp-table td.cmp-best { color: var(--good); font-weight: 700; }
+.cmp-ov { display: grid; gap: 2px; margin-bottom: 10px; }
+.cmp-chart { height: 130px; }
+.cmp-svg { width: 100%; height: 100%; display: block; }
+.cmp-axis { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--faint); }
+.cmp-tip { min-width: 110px; }
+.cmp-cols { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 760px) { .cmp-cols { grid-template-columns: 1fr; } }
+.cmp-rb { display: grid; gap: 4px; margin-bottom: 12px; }
+.cmp-rb-row { display: grid; grid-template-columns: minmax(90px, 160px) 1fr auto; gap: 8px; align-items: center; font-size: 12px; }
+.cmp-rb-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmp-rb-track { position: relative; height: 14px; background: var(--surface-3); border-radius: 4px; }
+.cmp-rb-bar { position: absolute; top: 2px; bottom: 2px; border: 1px solid; border-radius: 3px; }
+.cmp-rb-med { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; }
+.cmp-rb-mean { position: absolute; top: 3px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; border: 2px solid; background: var(--surface); }
+.cmp-rb-val { color: var(--muted); font-size: 11.5px; }
+.cmp-mapbox { display: grid; gap: 4px; }
+.cmp-map { width: 100%; max-width: 340px; aspect-ratio: 1; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; }
+.ev-pick { margin: 0 6px 0 0; vertical-align: middle; }

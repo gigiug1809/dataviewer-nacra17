@@ -100,11 +100,27 @@ function estimateWind(cog, sog, a, b, heel = null) {
     for (let c = t0 + 10 * 60e3; c <= t1 - 5 * 60e3; c += 5 * 60e3) {
       const W = P.filter(q => Math.abs(q.t - c) <= 10 * 60e3);
       const u = tackClusters(W, D, true), d = tackClusters(W, D, false);
-      let x = NaN;
-      if (u.ns >= 20 && u.np >= 20) x = bisect(u.s, u.p);
-      else if (d.ns >= 20 && d.np >= 20) x = (bisect(d.s, d.p) + 180) % 360;
-      if (isFinite(x) && Math.abs(angDiff(x, D)) < 35) series.push([c, x]);
+      // stima della finestra: bisettrici di bolina e di poppa (pesate), solo con almeno 1 minuto per mura
+      const xu = u.ns >= 30 && u.np >= 30 ? bisect(u.s, u.p) : NaN, xd = d.ns >= 30 && d.np >= 30 ? (bisect(d.s, d.p) + 180) % 360 : NaN;
+      const wu = isFinite(xu) ? Math.min(u.ns, u.np) : 0, wd = isFinite(xd) ? Math.min(d.ns, d.np) : 0;
+      if (!wu && !wd) continue;
+      const x = !wd ? xu : !wu ? xd : (xu + angDiff(xd, xu) * wd / (wu + wd) + 360) % 360;
+      if (Math.abs(angDiff(x, D)) < 35) series.push([c, x, wu + wd]);
     }
+  }
+  // togli il rumore: via i punti lontani dai vicini (più di 10°), poi media pesata nel tempo (gaussiana, σ = 8 min)
+  if (series.length >= 3) {
+    const keep = series.filter((p, i) => {
+      const nb = series.filter((q, j) => j !== i && Math.abs(q[0] - p[0]) <= 15 * 60e3).map(q => angDiff(q[1], D)).sort((x, y) => x - y);
+      return !nb.length || Math.abs(angDiff(p[1], D) - nb[nb.length >> 1]) <= 10;
+    });
+    const sm = [], sg = 8 * 60e3;
+    if (keep.length >= 2) for (let t = keep[0][0]; t <= keep[keep.length - 1][0] + 1; t += 2 * 60e3) {
+      let x = 0, y = 0;
+      for (const [tq, a, w] of keep) { const k = w * Math.exp(-((t - tq) ** 2) / (2 * sg * sg)); x += k * Math.cos(a * Math.PI / 180); y += k * Math.sin(a * Math.PI / 180); }
+      sm.push([t, (Math.atan2(y, x) * 180 / Math.PI + 360) % 360]);
+    }
+    series.length = 0; series.push(...sm);
   }
   let shiftMin = 0, shiftMax = 0;
   for (const [, x] of series) { const d = angDiff(x, D); shiftMin = Math.min(shiftMin, d); shiftMax = Math.max(shiftMax, d); }
@@ -133,6 +149,14 @@ function windText(W) {
   return { line: parts.filter(p => !/NaN/.test(p)).join(' · '), shift };
 }
 
+/* valore del campione più vicino (senza interpolare: l'angolo al vento salta tra +180 e -180) */
+function nearestVal(ch, t, maxGap) {
+  const i = idxAt(ch.t, t), n = ch.t.length;
+  let j = i >= n ? n - 1 : i;
+  if (i > 0 && i < n && t - ch.t[i - 1] < ch.t[i] - t) j = i - 1;
+  return j >= 0 && Math.abs(ch.t[j] - t) <= maxGap ? ch.v[j] : NaN;
+}
+
 /* ---------- andature, secondo per secondo ---------- */
 const SAIL_LABEL = { bolina: 'Bolina', traverso: 'Traverso', poppa: 'Poppa' };
 /* finestre delle manovre: quelle segnate e quelle trovate dalla rotta (anche se non salvate) */
@@ -144,7 +168,7 @@ function maneuverWindows(S) {
 function sailStates(S, a, b, step = 1000) {
   const n = Math.max(0, Math.floor((b - a) / step)), out = new Array(n);
   if (!S.sog || !S.cog || !S.twdAt) return out.fill(null);
-  const man = maneuverWindows(S);
+  const man = maneuverWindows(S), twaCh = S.ch('calc:twa'), vmgCh = S.ch('calc:vmg');
   let mi = 0;
   for (let k = 0; k < n; k++) {
     const t = a + k * step, v = interp(S.sog, t), c = interp(S.cog, t), w = S.twdAt(t);
@@ -152,9 +176,12 @@ function sailStates(S, a, b, step = 1000) {
     while (mi < man.length && man[mi][1] < t) mi++;
     if (v < SAIL_MIN_KN) { out[k] = { mode: 'lento', v }; continue; }
     if (mi < man.length && man[mi][0] <= t) { out[k] = { mode: 'manovra', v }; continue; }
-    if (!isFinite(c) || !isFinite(w)) { out[k] = null; continue; }
-    const twa = angDiff(w, c), A = Math.abs(twa);   // twa > 0: vento da dritta (mure a dritta)
-    out[k] = { mode: A < 70 ? 'bolina' : A > 115 ? 'poppa' : 'traverso', tack: twa > 0 ? 'dritta' : 'sinistra', A, v, vmg: v * Math.cos(A * Math.PI / 180), t };
+    // angolo al vento smussato (dalla bussola se affidabile), altrimenti dalla rotta
+    const tw = twaCh ? nearestVal(twaCh, t, 2000) : NaN;
+    if (!isFinite(tw) && (!isFinite(c) || !isFinite(w))) { out[k] = null; continue; }
+    const twa = isFinite(tw) ? tw : angDiff(w, c), A = Math.abs(twa);   // twa > 0: vento da dritta (mure a dritta)
+    const vm = vmgCh ? nearestVal(vmgCh, t, 2000) : NaN;
+    out[k] = { mode: A < 70 ? 'bolina' : A > 115 ? 'poppa' : 'traverso', tack: twa > 0 ? 'dritta' : 'sinistra', A, v, vmg: isFinite(vm) ? vm : v * Math.cos(A * Math.PI / 180), t };
   }
   return out;
 }
