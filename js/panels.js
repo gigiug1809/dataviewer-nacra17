@@ -11,7 +11,8 @@ const ICONS = {
   sound: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 7.5h3l4-3.5v12l-4-3.5h-3z"/><path d="M13.5 7a4 4 0 0 1 0 6"/></svg>',
   mute: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 7.5h3l4-3.5v12l-4-3.5h-3z"/><path d="M13.5 8l4 4M17.5 8l-4 4"/></svg>',
   full: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 7.5v-4h4M12.5 3.5h4v4M16.5 12.5v4h-4M7.5 16.5h-4v-4"/></svg>',
-  follow: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="3"/><path d="M10 2v3M10 15v3M2 10h3M15 10h3"/></svg>'
+  follow: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="3"/><path d="M10 2v3M10 15v3M2 10h3M15 10h3"/></svg>',
+  view: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.3 12.3l5 5M6.5 8.5h4M8.5 6.5v4"/></svg>'
 };
 const WINDOWS = [[10e3, '10 s'], [30e3, '30 s'], [60e3, '1 min'], [120e3, '2 min'], [300e3, '5 min'], [600e3, '10 min'], [1800e3, '30 min'], [0, 'Tutta l\'uscita']];
 const PANEL_TYPES = {
@@ -66,15 +67,81 @@ class VideoPanel {
     this.video.addEventListener('seeked', () => { if (this.pendingSeek != null) { const s = this.pendingSeek; this.pendingSeek = null; this.seekTo(s); } else this.V.requestDraw(); });
     this.video.addEventListener('error', () => { if (this.clip) this.showMsg(`Non riesco a riprodurre ${this.clip.file.split('/').pop()}. ${this.clip.codec === 'hvc1' ? 'È un video HEVC: usa Google Chrome aggiornato su un Mac recente.' : ''}`); });
     this.video.addEventListener('timeupdate', () => { if (this.unlocked) this.renderSync(); });
+    this.video.addEventListener('loadedmetadata', () => this.applyView());
+    document.addEventListener('fullscreenchange', this._fs = () => requestAnimationFrame(() => this.applyView()));
+    this.bindView();
+  }
+  /* ---------- visione: rotazione e specchio (del singolo video, salvati nell'uscita), zoom e spostamento (di questo pannello) ---------- */
+  view() { const c = this.clip || {}; return { rot: ((c.rot || 0) % 360 + 360) % 360, flip: !!c.flip, z: this.cfg.zoom || 1, x: this.cfg.px || 0, y: this.cfg.py || 0 }; }
+  applyView() {
+    const v = this.video, W = this.el.clientWidth, H = this.el.clientHeight, s = this.view();
+    if (!W || !H) return;
+    const side = s.rot % 180 !== 0, w = side ? H : W, hh = side ? W : H;
+    // dentro il riquadro, il video non può uscire più del necessario
+    const mx = Math.max(0, (W * s.z - W) / 2), my = Math.max(0, (H * s.z - H) / 2);
+    const x = clamp(s.x, -mx, mx), y = clamp(s.y, -my, my);
+    Object.assign(v.style, { position: 'absolute', width: w + 'px', height: hh + 'px', left: (W - w) / 2 + 'px', top: (H - hh) / 2 + 'px',
+      transform: `translate(${x}px, ${y}px) rotate(${s.rot}deg) scale(${s.flip ? -s.z : s.z}, ${s.z})`, transformOrigin: '50% 50%' });
+    this.el.classList.toggle('zoomed', s.z > 1.001);
+  }
+  setView(o, save = true) {
+    const cl = this.clip;
+    if ('rot' in o && cl) cl.rot = ((o.rot % 360) + 360) % 360;
+    if ('flip' in o && cl) cl.flip = o.flip;
+    if ('z' in o) this.cfg.zoom = clamp(o.z, 1, 8);
+    if ('x' in o) this.cfg.px = o.x;
+    if ('y' in o) this.cfg.py = o.y;
+    if (this.cfg.zoom <= 1.001) { this.cfg.zoom = 1; this.cfg.px = 0; this.cfg.py = 0; }
+    this.applyView();
+    if (save) { if ('rot' in o || 'flip' in o) this.S.save(); this.V.layoutChangedSoon(); }
+  }
+  bindView() {
+    const el = this.el;
+    // rotella: zoom verso il punto del mouse
+    el.addEventListener('wheel', e => {
+      if (!this.cam() || this.unlocked) return;
+      e.preventDefault();
+      const s = this.view(), r = el.getBoundingClientRect(), f = e.deltaY > 0 ? 1 / 1.15 : 1.15, z = clamp(s.z * f, 1, 8), k = z / s.z;
+      const cx = e.clientX - r.left - r.width / 2, cy = e.clientY - r.top - r.height / 2;
+      this.setView({ z, x: cx - (cx - s.x) * k, y: cy - (cy - s.y) * k });
+    }, { passive: false });
+    // trascinare: sposta l'inquadratura (solo con lo zoom)
+    let d = null;
+    el.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || this.unlocked || this.view().z <= 1.001 || e.target.closest('.sync-bar, button')) return;
+      const s = this.view(); d = { x: e.clientX, y: e.clientY, px: s.x, py: s.y }; el.setPointerCapture(e.pointerId); e.preventDefault();
+    });
+    el.addEventListener('pointermove', e => { if (d) this.setView({ x: d.px + e.clientX - d.x, y: d.py + e.clientY - d.y }, false); });
+    const up = () => { if (d) { d = null; this.V.layoutChangedSoon(); } };
+    el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+    // doppio clic: torna alla vista intera
+    el.addEventListener('dblclick', e => { if (e.target.closest('.sync-bar')) return; this.setView({ z: 1, x: 0, y: 0 }); });
+  }
+  viewMenu(anchor) {
+    const s = this.view();
+    menu(anchor, [
+      { head: this.clip ? `Rotazione e specchio di ${this.clip.file.split('/').pop()}` : 'Rotazione: prima vai a un momento con il video' },
+      { label: '↻ Ruota di 90° a destra', run: () => this.setView({ rot: s.rot + 90 }) },
+      { label: '↺ Ruota di 90° a sinistra', run: () => this.setView({ rot: s.rot - 90 }) },
+      { label: '⇋ ' + (s.flip ? 'Togli lo specchio' : 'Specchia (destra ↔ sinistra)'), run: () => this.setView({ flip: !s.flip }) },
+      { sep: true }, { head: `Zoom (ora ${fmtNum(s.z, 1)}×) · anche con la rotella, trascina per spostare` },
+      { label: '＋ Avvicina', run: () => this.setView({ z: s.z * 1.5, x: s.x * 1.5, y: s.y * 1.5 }) },
+      { label: '－ Allontana', run: () => this.setView({ z: s.z / 1.5, x: s.x / 1.5, y: s.y / 1.5 }) },
+      { label: '▢ Vista intera (anche doppio clic)', run: () => this.setView({ z: 1, x: 0, y: 0 }) },
+      { sep: true },
+      { label: 'Ripristina tutto', run: () => this.setView({ rot: 0, flip: false, z: 1, x: 0, y: 0 }) }
+    ]);
   }
   cam() { return this.S.meta.cameras.find(c => c.id === this.cfg.cam); }
   title() { const c = this.cam(); return c ? `Video · ${c.name}` : 'Video'; }
   headButtons() {
     const mute = h('button', { class: 'icon-btn', title: 'Audio', 'aria-label': 'Audio', html: this.video.muted ? ICONS.mute : ICONS.sound });
     mute.onclick = () => { this.video.muted = !this.video.muted; this.cfg.muted = this.video.muted; mute.innerHTML = this.video.muted ? ICONS.mute : ICONS.sound; this.V.layoutChanged(); };
+    const vb = h('button', { class: 'icon-btn', title: 'Ruota, specchia, zoom', 'aria-label': 'Visione del video', html: ICONS.view });
+    vb.onclick = e => { e.stopPropagation(); this.viewMenu(vb); };
     return [
       h('button', { class: 'icon-btn', title: 'Sincronizza questo video con i dati', 'aria-label': 'Sincronizza', html: ICONS.sync, onclick: () => this.toggleSync() }),
-      mute,
+      vb, mute,
       h('button', { class: 'icon-btn', title: 'Schermo intero', 'aria-label': 'Schermo intero', html: ICONS.full, onclick: () => this.el.requestFullscreen && this.el.requestFullscreen() })
     ];
   }
@@ -93,6 +160,7 @@ class VideoPanel {
       if (this.loading !== token) return;
       this.video.currentTime = target;
       this.msg.hidden = true;
+      this.applyView();
     } catch (e) {
       if (this.loading === token) this.showMsg(`Video non disponibile: ${clip.file}. Il disco è collegato?`);
     }
@@ -216,10 +284,10 @@ class VideoPanel {
   settings() {
     const sel = h('select', { class: 'full' }, this.S.meta.cameras.map(c => h('option', { value: c.id }, c.name)));
     sel.value = this.cfg.cam || '';
-    return { el: h('label', { class: 'f' }, 'Camera', sel), apply: () => { this.cfg.cam = sel.value; this.clip = null; } };
+    return { el: h('label', { class: 'f' }, 'Camera', sel), apply: () => { this.cfg.cam = sel.value; this.clip = null; this.applyView(); } };
   }
-  resize() {}
-  destroy() { this.loading = null; this.video.pause(); this.video.removeAttribute('src'); this.video.load(); }
+  resize() { this.applyView(); }
+  destroy() { document.removeEventListener('fullscreenchange', this._fs); this.loading = null; this.video.pause(); this.video.removeAttribute('src'); this.video.load(); }
 }
 function fmtOffsetShort(sec) { const m = Math.floor(sec / 60), s = sec - m * 60; return `${m}:${s.toFixed(1).padStart(4, '0')}`; }
 

@@ -189,7 +189,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
 .pnl-empty > div { display: grid; gap: 8px; justify-items: center; }
 
 /* video */
-.vid-box { position: absolute; inset: 0; background: #000; }
+.vid-box { position: absolute; inset: 0; background: #000; overflow: hidden; }
+.vid-box.zoomed { cursor: grab; } .vid-box.zoomed:active { cursor: grabbing; }
 .vid-box video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
 .vid-tag { position: absolute; left: 8px; top: 8px; font: 600 11px var(--mono); color: #fff; background: rgba(0, 0, 0, .55); padding: 3px 7px; border-radius: 5px; pointer-events: none; }
 .vid-msg { position: absolute; inset: 0; display: grid; place-items: center; color: #bbb; text-align: center; padding: 16px; font-size: 13px; }

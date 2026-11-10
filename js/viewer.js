@@ -15,6 +15,10 @@ const Viewer = {
     const meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
     if (!meta) { toast('Uscita non trovata.'); Router.go('#/debrief'); return; }
     meta.view = meta.view || {};
+    try {
+      const n = await adoptOrphanVideos(folder, meta);
+      if (n) { await Store.saveSession(folder, meta); toast(n === 1 ? 'Nella cartella della giornata c\'era un video che non era nell\'elenco: l\'ho aggiunto.' : `Nella cartella della giornata c'erano ${n} video che non erano nell'elenco: li ho aggiunti.`, 6000); }
+    } catch (e) { /* cartella video non leggibile */ }
     const S = this.S = new Session(folder, meta);
     await S.load((msg, p) => { load.querySelector('span').textContent = msg; load.querySelector('.progress i').style.width = (p * 100) + '%'; });
     if (!this.open_ || this.S !== S) return;

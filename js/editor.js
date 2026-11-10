@@ -614,7 +614,7 @@ function importSegmentsInto(meta, text, save) {
 /* importa un file del Logger nella giornata del suo giorno (la crea se non c'è).
    Sostituisce i dati ricevuti in live della stessa registrazione; eventi e tratti restano. */
 /* video del Logger (o dell'iPhone): va nella giornata del suo giorno, nella camera "iPhone" */
-async function importPhoneVideo(file, onStep) {
+async function importPhoneVideo(file, onStep, handle = null) {
   const clip = await probeClip(file);
   if (!['logger', 'apple', 'gps'].includes(clip.startSrc)) return { ok: false, msg: `${file.name}: non trovo l'ora esatta del video. Caricalo aprendo la giornata (Video e dati).` };
   const day = ymdOf(clip.start);
@@ -626,17 +626,50 @@ async function importPhoneVideo(file, onStep) {
   const name = clip.startSrc === 'logger' ? 'iPhone (Logger)' : 'iPhone';
   let cam = meta.cameras.find(c => c.name === name);
   if (!cam) { cam = { id: uid('c'), name, offset: 0, telemetry: false, clips: [] }; meta.cameras.push(cam); }
+  let moved = false;
   if (!(await Store.exists(`${folder}/${dest}`)) || (await Store.file(`${folder}/${dest}`)).size !== file.size) {
-    onStep && onStep(`copio ${file.name} (${fmtBytes(file.size)})…`);
-    let shown = 0;
-    await Store.copyIn(file, `${folder}/${dest}`, (p) => { if (onStep && p - shown >= 0.1) { shown = p; onStep(`copio ${file.name}: ${Math.round(p * 100)}%`); } });
+    // dalla cartella "Da importare" (stesso disco) provo a spostarlo: niente copia di molti GB
+    if (handle && typeof handle.move === 'function') {
+      try { await handle.move(await Store.dir(`${folder}/video`, true), dest.split('/').pop()); moved = true; } catch (e) { moved = false; }
+    }
+    if (!moved) {
+      onStep && onStep(`copio ${file.name} (${fmtBytes(file.size)})…`);
+      let shown = 0;
+      await Store.copyIn(file, `${folder}/${dest}`, (p) => { if (onStep && p - shown >= 0.1) { shown = p; onStep(`copio ${file.name}: ${Math.round(p * 100)}%`); } });
+    }
   }
   clip.file = dest;
-  cam.clips.push(clip);
-  cam.clips.sort((a, b) => a.start - b.start);
-  await Store.saveSession(folder, meta);
+  // rileggo l'uscita adesso: durante una copia lunga qualcun altro può averla salvata
+  const fresh = (await Store.readJSON(`${folder}/${SESSION_FILE}`)) || meta;
+  let fc = fresh.cameras.find(c => c.id === cam.id) || fresh.cameras.find(c => c.name === name);
+  if (!fc) { fc = cam; fc.clips = []; fresh.cameras.push(fc); }
+  if (!fc.clips.some(cl => cl.file === dest)) fc.clips.push(clip);
+  fc.clips.sort((a, b) => a.start - b.start);
+  await Store.saveSession(folder, fresh);
   const t = new Date(clip.start);
-  return { ok: true, day, folder, msg: `${file.name} → giornata del ${fmtDateLong(day)}, video delle ${p2(t.getHours())}:${p2(t.getMinutes())} (${fmtDur(clip.duration * 1000)}${clip.startSrc === 'logger' ? ', già allineato ai dati' : ''}).` };
+  return { ok: true, day, folder, moved, msg: `${file.name} → giornata del ${fmtDateLong(day)}, video delle ${p2(t.getHours())}:${p2(t.getMinutes())} (${fmtDur(clip.duration * 1000)}${clip.startSrc === 'logger' ? ', già allineato ai dati' : ''}).` };
+}
+
+/* video nella cartella "video" della giornata ma non nell'elenco (copiati a mano, o un salvataggio li ha persi):
+   li leggo e li aggiungo. Ritorna quanti. */
+async function adoptOrphanVideos(folder, meta) {
+  let entries = [];
+  try { entries = await Store.list(`${folder}/video`); } catch (e) { return 0; }
+  const known = new Set(meta.cameras.flatMap(c => c.clips.map(cl => cl.file)));
+  let n = 0;
+  for (const e of entries) {
+    if (e.kind !== 'file' || !VIDEO_RE.test(e.name) || e.name.startsWith('.') || e.name.endsWith('.crswap') || known.has(`video/${e.name}`)) continue;
+    let clip;
+    try { clip = await probeClip(await e.handle.getFile()); } catch (err) { continue; }
+    if (!(clip.duration > 0)) continue;
+    clip.file = `video/${e.name}`;
+    const name = clip.startSrc === 'logger' ? 'iPhone (Logger)' : clip.gpmd || clip.gopro ? 'GoPro' : 'Camera';
+    let cam = meta.cameras.find(c => c.name === name) || (name === 'Camera' ? meta.cameras[0] : null);
+    if (!cam) { cam = { id: uid('c'), name, offset: 0, telemetry: name === 'GoPro', clips: [] }; meta.cameras.push(cam); }
+    cam.clips.push(clip); cam.clips.sort((a, b) => a.start - b.start);
+    n++;
+  }
+  return n;
 }
 
 async function importPhoneFile(file) {

@@ -49,6 +49,7 @@ const Home = {
     this.dayList = h('div', { class: 'sess-list' });
     page.append(this.cal, this.dayList);
     this.drawCalendar();
+    this.checkInbox();
     // i file del telefono si possono trascinare ovunque sulla pagina
     page.addEventListener('dragover', e => { if ([...e.dataTransfer.items].some(i => i.kind === 'file')) { e.preventDefault(); page.classList.add('drop-on'); } });
     page.addEventListener('dragleave', e => { if (e.target === page) page.classList.remove('drop-on'); });
@@ -170,22 +171,67 @@ const Home = {
     this.importPhone(await Promise.all(handles.map(h => h.getFile())));
   },
   /* file del Logger: ognuno nella giornata del suo giorno */
-  async importPhone(files) {
-    files = files.filter(f => !/\.json$/i.test(f.name)); // il file .json accanto alla registrazione non serve
-    if (!files.length) return;
+  /* cartella "Da importare" nella libreria (per esempio copiata dal telefono all'SSD col cavo):
+     quello che c'è di nuovo va da solo nelle giornate. I video si spostano (se Chrome lo permette) invece di copiarli;
+     dati e file .json finiscono in "Da importare/Importati". Quello che non si può spostare viene segnato in
+     ".importati.json", così non si importa due volte. Nulla viene cancellato. */
+  async checkInbox() {
+    if (Store.kind !== 'fs' || this.inboxBusy) return;
+    this.inboxBusy = true;   // subito: due aperture ravvicinate della pagina non devono importare due volte
+    try { await this.checkInboxNow(); } finally { this.inboxBusy = false; }
+  },
+  async checkInboxNow() {
+    let name = null;
+    try { for (const e of await Store.list('')) if (e.kind === 'directory' && /^da[ _-]?importare$/i.test(e.name)) { name = e.name; break; } } catch (e) { return; }
+    if (!name) return;
+    const ledger = (await Store.readJSON(`${name}/.importati.json`)) || {};
+    const list = [];
+    for (const e of await Store.list(name)) {
+      if (e.kind !== 'file' || e.name.startsWith('.') || !/\.(csv|json|mov|mp4|m4v)$/i.test(e.name)) continue;
+      const f = await e.handle.getFile();
+      if (ledger[e.name] === f.size) continue;
+      list.push({ f, handle: e.handle });
+    }
+    if (!list.some(x => !/\.json$/i.test(x.f.name))) return;
+    const nv = list.filter(x => VIDEO_RE.test(x.f.name)).length, nd = list.filter(x => /\.csv$/i.test(x.f.name)).length;
+    toast(`Nella cartella «${name}» ci sono ${[nd ? `${nd} file di dati` : '', nv ? `${nv} video` : ''].filter(Boolean).join(' e ')}: li importo.`, 5000);
+    await this.importPhone(list, { inbox: name, ledger });
+  },
+  async importPhone(files, opt = {}) {
+    // elementi: File, oppure { f: File, handle } dalla cartella "Da importare"
+    let items = files.map(x => x instanceof File ? { f: x, handle: null } : x);
+    const sidecars = items.filter(x => /\.json$/i.test(x.f.name));
+    items = items.filter(x => !/\.json$/i.test(x.f.name)); // il file .json accanto alla registrazione non serve
+    if (!items.length) return;
     const out = [];
     // prima i dati, poi i video (più lenti da copiare)
-    files.sort((a, b) => VIDEO_RE.test(a.name) - VIDEO_RE.test(b.name) || a.name.localeCompare(b.name));
-    const nv = files.filter(f => VIDEO_RE.test(f.name)).length;
+    items.sort((a, b) => VIDEO_RE.test(a.f.name) - VIDEO_RE.test(b.f.name) || a.f.name.localeCompare(b.f.name));
+    const nv = items.filter(x => VIDEO_RE.test(x.f.name)).length;
     let iv = 0;
-    for (const f of files) {
+    const done = [];   // importati (o già presenti) dalla cartella "Da importare"
+    for (const { f, handle } of items) {
+      let r;
       if (VIDEO_RE.test(f.name)) {
         iv++;
-        try { out.push(await importPhoneVideo(f, label => toast(`Video ${iv} di ${nv}: ${label}`, 2500))); } catch (e) { out.push({ ok: false, msg: `${f.name}: ${errMsg(e)}` }); }
-        continue;
+        try { r = await importPhoneVideo(f, label => toast(`Video ${iv} di ${nv}: ${label}`, 2500), opt.inbox ? handle : null); } catch (e) { r = { ok: false, msg: `${f.name}: ${errMsg(e)}` }; }
+      } else if (!/\.csv$/i.test(f.name)) r = { ok: false, msg: `${f.name}: qui si importano dati (.csv) e video del Logger. Garmin e Cyclops si caricano aprendo la giornata.` };
+      else { try { r = await importPhoneFile(f); } catch (e) { r = { ok: false, msg: `${f.name}: ${errMsg(e)}` }; } }
+      out.push(r);
+      if (opt.inbox && r.ok && !r.moved) done.push({ f, handle });
+    }
+    if (opt.inbox) {
+      // sistemo la cartella: quello che è stato importato va in "Importati" (o resta segnato nel registro)
+      const base = new Set(done.map(x => x.f.name.replace(/\.\w+$/, '')));
+      for (const s of sidecars) if (base.has(s.f.name.replace(/\.\w+$/, ''))) done.push(s);
+      let sub = null; try { sub = await Store.dir(`${opt.inbox}/Importati`, true); } catch (e) { sub = null; }
+      let kept = 0;
+      for (const { f, handle } of done) {
+        let ok = false;
+        if (sub && handle && typeof handle.move === 'function') { try { await handle.move(sub); ok = true; } catch (e) { ok = false; } }
+        if (!ok) { opt.ledger[f.name] = f.size; kept++; }
       }
-      if (!/\.csv$/i.test(f.name)) { out.push({ ok: false, msg: `${f.name}: qui si importano dati (.csv) e video del Logger. Garmin e Cyclops si caricano aprendo la giornata.` }); continue; }
-      try { out.push(await importPhoneFile(f)); } catch (e) { out.push({ ok: false, msg: `${f.name}: ${errMsg(e)}` }); }
+      if (kept) await Store.writeJSON(`${opt.inbox}/.importati.json`, opt.ledger);
+      if (kept) out.push({ ok: true, msg: `${kept} ${kept === 1 ? 'file è rimasto' : 'file sono rimasti'} in «${opt.inbox}» (Chrome non permette di spostarli): sono già importati e non verranno importati di nuovo. Puoi cancellarli quando vuoi.` });
     }
     const days = [...new Set(out.filter(r => r.folder).map(r => r.folder))];
     const last = out.filter(r => r.day).pop();

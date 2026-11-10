@@ -28,6 +28,7 @@ const SRC_PRIORITY = { Vakaros: 0, iPhone: 0, FIT: 1, GPX: 1, TCX: 1, CSV: 2, Go
 class Session {
   constructor(folder, meta) {
     this.folder = folder; this.meta = meta;
+    this.diskModified = meta.modified || 0;
     this.channels = []; this.byId = new Map(); this.urls = new Map(); this.files = new Map();
     this.loadErrors = [];
     this.saveState = 'saved';
@@ -37,7 +38,14 @@ class Session {
   path(rel) { return `${this.folder}/${rel}`; }
   save() { this.saveState = 'pending'; this.onSave && this.onSave(this.saveState); this._save(); }
   async saveNow() {
-    try { await Store.saveSession(this.folder, this.meta); this.saveState = 'saved'; }
+    try {
+      // un'importazione può aver aggiunto dati o video mentre l'uscita era aperta: li tengo
+      if (!this.live) {
+        const disk = await Store.readJSON(this.path(SESSION_FILE));
+        if (disk && (disk.modified || 0) > this.diskModified && mergeExternal(this.meta, disk)) toast('Nel frattempo sono arrivati nuovi dati o video in questa giornata: li ho tenuti. Riapri la giornata per vederli.', 8000);
+      }
+      await Store.saveSession(this.folder, this.meta); this.diskModified = this.meta.modified; this.saveState = 'saved';
+    }
     catch (e) { this.saveState = 'error'; toast('Salvataggio non riuscito: ' + errMsg(e), 8000, 'bad'); }
     this.onSave && this.onSave(this.saveState);
   }
@@ -346,6 +354,19 @@ function chainChapters(clips) {
   clips.sort((a, b) => a.start - b.start);
 }
 const START_SRC_LABEL = { gps: 'GPS della GoPro (esatta)', logger: 'N17 Logger (esatta, stesso orologio dei dati)', apple: 'metadati iPhone', 'mvhd-end': 'fine registrazione meno la durata', filename: 'nome del file', mvhd: 'ora registrata nel file', mtime: 'data di modifica del file', chain: 'segue il capitolo precedente', manual: 'impostata a mano' };
+
+/* aggiunge a meta le fonti e i video che ci sono nel file sul disco ma non in memoria; true se ha aggiunto qualcosa */
+function mergeExternal(meta, disk) {
+  let added = false;
+  for (const s of disk.sources || []) if (!meta.sources.some(x => x.file === s.file || x.id === s.id)) { meta.sources.push(s); added = true; }
+  for (const c of disk.cameras || []) {
+    let cam = meta.cameras.find(x => x.id === c.id) || meta.cameras.find(x => x.name === c.name);
+    if (!cam) { meta.cameras.push(c); added = true; continue; }
+    for (const cl of c.clips || []) if (!cam.clips.some(x => x.file === cl.file)) { cam.clips.push(cl); added = true; }
+    cam.clips.sort((a, b) => a.start - b.start);
+  }
+  return added;
+}
 
 /* ---------- Copertura: dove ci sono video, dove ci sono dati, dove ci sono entrambi ---------- */
 function mergeSpans(list, gap = 0) {
