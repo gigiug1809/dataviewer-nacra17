@@ -81,23 +81,30 @@ function topSegments(segs, frac) {
 /* ---------- grafici ---------- */
 /* box plot o violin: categorie [{label, sub, color, values}] sulla stessa scala */
 function distChart(cats, { kind = 'box', unit = '', dec = 1, title = '' } = {}) {
-  cats = cats.filter(c => c.values.length >= 3);
-  if (!cats.length) return null;
+  // una mura con pochi valori (es. 2 tratti dritti) si mostra lo stesso, a punti: non deve sparire
+  cats = cats.filter(c => c.values.length >= 1);
+  if (!cats.length || cats.reduce((a, c) => a + c.values.length, 0) < 3) return null;
   const all = cats.flatMap(c => c.values);
   let lo = Math.min(...cats.map(c => pctl(c.values, 0))), hi = Math.max(...cats.map(c => pctl(c.values, 1)));
   if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
   const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
-  const cw = 82, L = 46, R = 10, T = 22, B = 40, H = 210, W = L + R + cats.length * cw;
+  const head = title + (unit ? ` (${unit})` : '');
+  const cw = 82, L = 46, R = 10, T = 22, B = 40, H = 210, W = Math.max(L + R + cats.length * cw, Math.ceil(head.length * 7.2) + 12); // il titolo deve starci tutto
   const Y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
   const svg = sv('svg', { width: W, height: H, class: 'pf-svg' });
-  svg.append(svText(4, 13, title + (unit ? ` (${unit})` : ''), { 'font-weight': 700, 'font-size': 12 }));
-  const { ticks } = niceTicks(lo, hi, 5);
-  for (const tv of ticks) { const y = Y(tv); svg.append(sv('line', { x1: L, x2: W - R, y1: y, y2: y, class: 'pf-grid' }), svText(L - 6, y + 4, fmtNum(tv, Math.abs(ticks[1] - ticks[0]) < 1 ? 1 : 0), { 'text-anchor': 'end', class: 'pf-ax' })); }
+  svg.append(svText(4, 13, head, { 'font-weight': 700, 'font-size': 12 }));
+  const { ticks, step } = niceTicks(lo, hi, 5);
+  const td = Math.max(0, Math.min(3, -Math.floor(Math.log10(step) + 1e-9))); // decimali quanti ne servono al passo (0,02 → 2)
+  for (const tv of ticks) { const y = Y(tv); svg.append(sv('line', { x1: L, x2: W - R, y1: y, y2: y, class: 'pf-grid' }), svText(L - 6, y + 4, fmtNum(tv, td), { 'text-anchor': 'end', class: 'pf-ax' })); }
   cats.forEach((c, i) => {
     const x = L + i * cw + cw / 2, v = c.values, q1 = pctl(v, 0.25), q2 = pctl(v, 0.5), q3 = pctl(v, 0.75), iq = q3 - q1;
     const wl = Math.min(...v.filter(x => x >= q1 - 1.5 * iq)), wh = Math.max(...v.filter(x => x <= q3 + 1.5 * iq));
     const g = sv('g'); g.append(sv('title', {}, `${c.label}${c.sub ? ' · ' + c.sub : ''}\nmediana ${fmtNum(q2, dec)} · metà centrale ${fmtNum(q1, dec)}–${fmtNum(q3, dec)} · ${v.length} valori`));
-    if (kind === 'violin') {
+    if (v.length < 5) {
+      // troppo pochi per una scatola: i singoli valori e la mediana
+      v.forEach((z, k) => g.append(sv('circle', { cx: x + (k - (v.length - 1) / 2) * 7, cy: Y(z), r: 3.2, fill: c.light || c.color, 'fill-opacity': 0.8, stroke: c.color, 'stroke-width': 1.2 })));
+      g.append(sv('line', { x1: x - 17, x2: x + 17, y1: Y(q2), y2: Y(q2), stroke: c.color, 'stroke-width': 2.5 }));
+    } else if (kind === 'violin') {
       const sd = sdOf(v) || (hi - lo) / 20, bw = Math.max(1e-6, 1.06 * sd * Math.pow(v.length, -0.2)), N = 48, dens = [];
       const a = Math.min(...v), bb = Math.max(...v);
       for (let k = 0; k <= N; k++) { const y = a + (bb - a) * k / N; let s = 0; for (const z of v) s += Math.exp(-0.5 * ((y - z) / bw) ** 2); dens.push([y, s]); }
@@ -110,7 +117,7 @@ function distChart(cats, { kind = 'box', unit = '', dec = 1, title = '' } = {}) 
       for (const w of [wl, wh]) g.append(sv('line', { x1: x - 8, x2: x + 8, y1: Y(w), y2: Y(w), stroke: c.color, 'stroke-width': 1.3 }));
       g.append(sv('rect', { x: x - 17, y: Y(q3), width: 34, height: Math.max(1, Y(q1) - Y(q3)), rx: 3, fill: c.light || c.color, 'fill-opacity': 0.55, stroke: c.color, 'stroke-width': 1.3 }));
       g.append(sv('line', { x1: x - 17, x2: x + 17, y1: Y(q2), y2: Y(q2), stroke: c.color, 'stroke-width': 2.5 }));
-      for (const o of v.filter(z => z < wl || z > wh)) g.append(sv('circle', { cx: x + (Math.random() - 0.5) * 10, cy: Y(o), r: 2, fill: c.color, 'fill-opacity': 0.6 }));
+      v.filter(z => z < wl || z > wh).forEach((o, k) => g.append(sv('circle', { cx: x + ((k % 5) - 2) * 2.5, cy: Y(o), r: 2, fill: c.color, 'fill-opacity': 0.6 })));
     }
     g.append(svText(x, H - B + 16, c.label, { 'text-anchor': 'middle', class: 'pf-cat' }), svText(x, H - B + 29, c.sub || '', { 'text-anchor': 'middle', class: 'pf-ax' }));
     svg.append(g);
