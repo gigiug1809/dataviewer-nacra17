@@ -22,6 +22,15 @@ const Viewer = {
     const S = this.S = new Session(folder, meta);
     await S.load((msg, p) => { load.querySelector('span').textContent = msg; load.querySelector('.progress i').style.width = (p * 100) + '%'; });
     if (!this.open_ || this.S !== S) return;
+    // dashboard: vivono nella libreria e valgono per tutte le giornate. La giornata usa quella scelta per lei
+    // (meta.dash), altrimenti l'ultima usata; meta.dash = null vuol dire "disposizione solo di questa giornata".
+    this.dashName = null;
+    try {
+      const lib = await Store.libSettings();
+      const want = meta.dash === undefined ? lib.lastDash : meta.dash;
+      const tp = want ? (lib.templates || []).find(t => t.name === want) : null;
+      if (tp) { meta.layout = tp.layout.map(p => Object.assign({}, p, { id: uid('p'), cfg: resolveCfg(S, p.cfg, p.type) })); meta.dash = tp.name; this.dashName = tp.name; }
+    } catch (e) { /* libreria non leggibile: resta la disposizione della giornata */ }
     load.remove();
     this.start(S, root);
   },
@@ -87,7 +96,8 @@ const Viewer = {
       h('span', { class: 'small muted' }, 'Finestra'), winSel,
       h('div', { class: 'sep' }),
       h('button', { class: 'btn sm', onclick: e => this.addMenu(e.currentTarget) }, '+ Pannello'),
-      h('button', { class: 'btn sm', onclick: e => this.layoutMenu(e.currentTarget) }, 'Layout'),
+      S.live ? h('button', { class: 'btn sm', onclick: e => this.layoutMenu(e.currentTarget) }, 'Layout')
+        : (this.dashBtn = h('button', { class: 'btn sm', title: 'Dashboard: valgono per tutte le giornate', onclick: e => this.libDashMenu(e.currentTarget) }, this.dashLabel())),
       lockBtn,
       h('div', { class: 'sep' }),
       S.live ? h('span', { id: 'liveBar', class: 'row', style: { gap: '6px' } }) : h('button', { class: 'btn sm', onclick: () => Router.go(`#/uscita/${encodeURIComponent(S.folder)}/dati`) }, 'Video e dati'),
@@ -278,7 +288,69 @@ const Viewer = {
     }
     return out;
   },
-  layoutChanged() { if (!this.S || !this.grid) return; this.S.meta.layout = this.layoutData(); this.S.layoutDirty = true; this.S.save(); for (const r of this.panels.values()) r.ttl.textContent = r.inst.title(); },
+  layoutChanged() {
+    if (!this.S || !this.grid) return;
+    this.S.meta.layout = this.layoutData(); this.S.layoutDirty = true; this.S.save();
+    for (const r of this.panels.values()) r.ttl.textContent = r.inst.title();
+    if (this.dashName && !this.S.live) this.saveDashSoon();
+  },
+  /* ---------- Dashboard della libreria ---------- */
+  dashLabel() { return this.dashName ? `Dashboard: ${this.dashName} ▾` : 'Dashboard ▾'; },
+  portableLayout() { return this.layoutData().map(p => ({ type: p.type, x: p.x, y: p.y, w: p.w, h: p.h, z: p.z, cfg: portableCfg(this.S, p.cfg) })); },
+  saveDashSoon: debounce(async function () {
+    const V = Viewer; if (!V.S || !V.dashName) return;
+    try {
+      const lib = await Store.libSettings(), tp = (lib.templates || []).find(t => t.name === V.dashName);
+      if (!tp) return;
+      tp.layout = V.portableLayout(); tp.modified = Date.now(); lib.lastDash = V.dashName;
+      await Store.saveLib(lib);
+      if (!V._dashToast) { V._dashToast = true; toast(`Modifica salvata nella dashboard «${V.dashName}»: vale per tutte le giornate.`, 3500); }
+    } catch (e) { toast('Non riesco a salvare la dashboard: ' + errMsg(e), 6000, 'bad'); }
+  }, 1200),
+  setDash(name) {
+    this.dashName = name; this.S.meta.dash = name; this.S.save();
+    if (this.dashBtn) this.dashBtn.textContent = this.dashLabel();
+  },
+  async useDash(tp) {
+    this.applyLayout(tp.layout.map(p => Object.assign({}, p, { cfg: resolveCfg(this.S, p.cfg, p.type) })), false);
+    this.S.meta.layout = this.layoutData(); this.setDash(tp.name);
+    const lib = await Store.libSettings(); lib.lastDash = tp.name; await Store.saveLib(lib);
+    toast(`Dashboard «${tp.name}».`, 2000);
+  },
+  async newDash(lib) {
+    const name = ((await promptBox('Nuova dashboard', 'Nome della dashboard (es. "Bolina", "Video e assetto"). Varrà per tutte le giornate.', '')) || '').trim();
+    if (!name) return;
+    if ((lib.templates || []).some(t => t.name === name) && !(await confirmBox('Dashboard già esistente', `Esiste già una dashboard «${name}»: la sostituisco con questa disposizione?`, 'Sostituisci'))) return;
+    lib.templates = (lib.templates || []).filter(t => t.name !== name);
+    lib.templates.push({ name, layout: this.portableLayout(), created: Date.now() });
+    lib.lastDash = name; await Store.saveLib(lib);
+    this.setDash(name);
+    toast(`Dashboard «${name}» salvata: la trovi in tutte le giornate.`, 3500);
+  },
+  async libDashMenu(anchor) {
+    const lib = await Store.libSettings(), list = lib.templates || [], cur = this.dashName;
+    const items = [{ head: 'Dashboard · valgono per tutte le giornate' },
+      ...(list.length ? list.map(tp => ({ label: `${tp.name === cur ? '✓ ' : '   '}${tp.name}`, run: () => tp.name === cur ? null : this.useDash(tp) })) : [{ label: 'Nessuna dashboard salvata', disabled: true }]),
+      { sep: true },
+      { label: '＋ Salva questa disposizione come nuova dashboard…', run: () => this.newDash(lib) }];
+    if (cur) items.push(
+      { label: `✎ Rinomina «${cur}»…`, run: async () => {
+        const nn = ((await promptBox('Rinomina la dashboard', 'Nuovo nome', cur)) || '').trim();
+        if (!nn || nn === cur) return;
+        const l2 = await Store.libSettings(); if ((l2.templates || []).some(t => t.name === nn)) { toast('Esiste già una dashboard con quel nome.'); return; }
+        const tp = l2.templates.find(t => t.name === cur); if (!tp) return;
+        tp.name = nn; if (l2.lastDash === cur) l2.lastDash = nn; await Store.saveLib(l2); this.setDash(nn);
+        toast(`Rinominata in «${nn}». Le giornate che usavano «${cur}» la trovano con il nuovo nome solo se la scegli di nuovo lì.`, 6000);
+      } },
+      { label: `🗑 Elimina «${cur}»…`, run: async () => {
+        if (!(await confirmBox('Elimina la dashboard', `Elimino la dashboard «${cur}» dalla libreria? Questa giornata tiene la disposizione che vedi.`, 'Elimina', true))) return;
+        const l2 = await Store.libSettings(); l2.templates = (l2.templates || []).filter(t => t.name !== cur); if (l2.lastDash === cur) delete l2.lastDash; await Store.saveLib(l2);
+        this.setDash(null); toast('Dashboard eliminata.');
+      } },
+      { label: '⎋ Stacca: modifiche solo per questa giornata', run: () => { this.setDash(null); toast('Questa giornata ora ha una disposizione sua: le modifiche non toccano le dashboard.', 4000); } });
+    items.push({ sep: true }, { label: 'Disposizione predefinita (solo questa giornata)', run: () => { this.setDash(null); this.applyLayout(defaultLayout(this.S)); } });
+    menu(anchor, items);
+  },
   layoutChangedSoon: debounce(function () { Viewer.layoutChanged(); }, 800),
   panelSettings(inst) {
     const rec = inst._rec, cfg = rec.cfg;
@@ -356,9 +428,9 @@ const Viewer = {
     items.push({ head: rec ? 'Aggiungi un pannello' : 'Aggiungi qui un pannello' }, ...add, { sep: true });
     if (!this.S.dash) {
       items.push({ label: this.locked ? '🔓  Sblocca la disposizione' : '🔒  Blocca la disposizione', run: () => this.lockBtn.click() });
-      items.push({ label: 'Salva il layout come modello…', run: () => this.saveTemplate(lib) });
-      for (const tp of lib.templates) items.push({ label: `Applica il modello "${tp.name}"`, run: () => this.applyTemplate(tp) });
-      items.push({ label: 'Ripristina il layout predefinito', run: () => this.applyLayout(defaultLayout(this.S)) });
+      items.push({ label: '＋ Salva come nuova dashboard (per tutte le giornate)…', run: () => this.newDash(lib) });
+      for (const tp of lib.templates || []) items.push({ label: `${tp.name === this.dashName ? '✓' : '▦'}  Dashboard «${tp.name}»`, run: () => tp.name === this.dashName ? null : this.useDash(tp) });
+      items.push({ label: 'Disposizione predefinita (solo questa giornata)', run: () => { this.setDash(null); this.applyLayout(defaultLayout(this.S)); } });
     } else items.push({ label: '✓  Fatto: blocca i pannelli', run: () => this.setEditing(false) });
     menu({ getBoundingClientRect: () => ({ left: e.clientX, bottom: e.clientY, top: e.clientY }) }, items);
   },
@@ -767,8 +839,12 @@ function defaultLayout(S) {
 function portableCfg(S, cfg) {
   const out = JSON.parse(JSON.stringify(cfg));
   const ref = id => { const c = S.ch(id); return c ? { name: c.name, role: c.role, srcName: c.srcName, unit: c.unit } : null; };
-  if (cfg.ids) out.ids = cfg.ids.map(ref).filter(Boolean);
-  if (cfg.colorBy) out.colorBy = ref(cfg.colorBy);
+  // i canali che in questa giornata mancano (_missing) restano nella dashboard per le altre giornate
+  if (cfg.ids) out.ids = [...cfg.ids.map(ref).filter(Boolean), ...(cfg._missing || [])];
+  delete out._missing;
+  if (cfg.colorBy) out.colorBy = ref(cfg.colorBy) || cfg.colorBy;
+  // stili delle linee (colore, grafico, tratto): da id della giornata a "nome|strumento"
+  if (cfg.st) { out.st = {}; for (const [id, v] of Object.entries(cfg.st)) { const c = S.ch(id); if (c) out.st[`${c.name}|${c.srcName}`] = v; else if (id.includes('|')) out.st[id] = v; } }
   if (cfg.cam) out.cam = S.meta.cameras.findIndex(c => c.id === cfg.cam);
   return out;
 }
@@ -783,8 +859,14 @@ function resolveCfg(S, cfg, type) {
     if (c) used.add(c.id);
     return c ? c.id : null;
   };
-  if (cfg && cfg.ids) out.ids = cfg.ids.map(find).filter(Boolean);
+  if (cfg && cfg.ids) {
+    const res = cfg.ids.map(find);
+    out.ids = res.filter(Boolean);
+    const miss = cfg.ids.filter((r, i) => !res[i] && r && typeof r === 'object');
+    if (miss.length) out._missing = miss; else delete out._missing;
+  }
   if (cfg && cfg.colorBy) out.colorBy = find(cfg.colorBy);
+  if (cfg && cfg.st) { out.st = {}; for (const id of out.ids || []) { const c = S.ch(id); const v = c && cfg.st[`${c.name}|${c.srcName}`]; if (v) out.st[id] = v; } }
   if (type === 'video') { const c = S.meta.cameras[Math.max(0, cfg.cam || 0)] || S.meta.cameras[0]; out.cam = c && c.id; }
   return out;
 }
