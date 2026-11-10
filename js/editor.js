@@ -168,16 +168,11 @@ const Editor = {
       h('label', { class: 'f', style: { gridAutoFlow: 'column', alignItems: 'center' } }, 'Correzione orologio (s)', off),
       h('button', { class: 'btn sm danger', onclick: async () => { if (await confirmBox('Togliere la camera?', `La camera "${cam.name}" esce dall'uscita. I file video restano nella cartella.`, 'Togli', true)) { m.cameras = m.cameras.filter(c => c !== cam); this.save(); this.renderVideo(); this.renderCheck(); } } }, 'Togli')));
     if (hasGoPro) {
-      const zh = h('input', { type: 'number', step: 0.5, value: cam.heelZero ?? '', placeholder: 'auto', style: { width: '80px' } });
-      const zp = h('input', { type: 'number', step: 0.5, value: cam.pitchZero ?? '', placeholder: 'auto', style: { width: '80px' } });
-      zh.addEventListener('change', () => { cam.heelZero = zh.value === '' ? null : Number(zh.value); this.save(); });
-      zp.addEventListener('change', () => { cam.pitchZero = zp.value === '' ? null : Number(zp.value); this.save(); });
+      const fs = cam.fineSync, okN = fs ? fs.clips.filter(c => c.ok).length : 0;
       card.append(h('div', { class: 'row small' },
-        h('label', { class: 'chk' }, tel, 'Usa la telemetria GoPro (heel, trim e urti dal sensore di gravità; posizione e velocità se il GPS era acceso)'),
-        cam.telemetry !== false ? h('span', { class: 'row' },
-          h('span', { class: 'stat' }, 'Zero heel °'), zh, h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!cam.heelInv, onchange: e => { cam.heelInv = e.target.checked; this.save(); } }), 'inverti'),
-          h('span', { class: 'stat' }, 'Zero trim °'), zp, h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!cam.pitchInv, onchange: e => { cam.pitchInv = e.target.checked; this.save(); } }), 'inverti')) : null),
-        cam.telemetry !== false ? h('p', { class: 'stat' }, 'L\'assetto ha senso solo se la camera è fissata alla barca (non sul casco). "auto" prende come zero la posizione media della camera.') : null);
+        h('label', { class: 'chk' }, tel, 'Usa il GPS della GoPro (posizione e velocità, se era acceso)')),
+        h('p', { class: 'stat' }, 'Heel, trim, rotazione e urti della GoPro non si usano: la camera non è fissata in modo rigido alla barca. Il suo giroscopio serve solo a trovare l\'ora esatta del video'
+          + (fs ? (okN ? `: ${okN} ${okN === 1 ? 'spezzone affinato' : 'spezzoni affinati'} sul telefono del Logger.` : '.') : '.')));
     }
     const tb = h('table', { class: 'tbl' }, h('thead', null, h('tr', null, ['File', 'Durata', 'Video', 'Inizio', 'Ora presa da', 'Camera', ''].map(x => h('th', null, x)))));
     const body = h('tbody');
@@ -187,7 +182,7 @@ const Editor = {
       tIn.addEventListener('change', () => {
         const v = new Date(tIn.value).getTime();
         if (!isFinite(v)) return;
-        cl.start = v - (Number(cam.offset) || 0); cl.startSrc = 'manual';
+        cl.start = v - (Number(cam.offset) || 0); cl.startSrc = 'manual'; delete cl.fine;
         this.save(); this.renderVideo(); this.renderCheck();
       });
       const mv = h('select', { style: { width: '120px' } }, m.cameras.map(c => h('option', { value: c.id }, c.name)), h('option', { value: '__new' }, '+ nuova'));
@@ -213,7 +208,7 @@ const Editor = {
     if (cam.clips.length && !cam.clips.some(c => c.startSrc === 'gps' || c.startSrc === 'logger')) card.append(h('p', { class: 'stat' }, 'Senza GPS nella camera l\'ora viene dall\'orologio della GoPro: di solito è giusta entro qualche secondo. La rifinitura si fa nel viewer con lo strumento di sincronizzazione (⏱ sul video).'));
     return card;
   },
-  clipStartLocal(cam, cl) { const d = new Date(cl.start + (Number(cam.offset) || 0)); return `${ymdOf(d.getTime())}T${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; },
+  clipStartLocal(cam, cl) { const d = new Date(clipStartOf(cam, cl)); return `${ymdOf(d.getTime())}T${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; },
   newCam() {
     const cam = { id: uid('c'), name: `Camera ${this.meta.cameras.length + 1}`, offset: 0, telemetry: true, clips: [] };
     this.meta.cameras.push(cam);
@@ -528,7 +523,7 @@ const Editor = {
       h('span', { class: 'stat' }, 'Video e dati devono sovrapporsi sullo stesso orario. Se una barra è fuori posto, correggi l\'orologio della camera o lo spostamento del file.')));
     const rows = [];
     const m = this.meta;
-    m.cameras.forEach((cam, i) => rows.push({ label: cam.name, kind: 'cam', color: seriesColor(i), spans: cam.clips.map(cl => { const s = cl.start + (Number(cam.offset) || 0); return [s, s + cl.duration * 1000]; }) }));
+    m.cameras.forEach((cam, i) => rows.push({ label: cam.name, kind: 'cam', color: seriesColor(i), spans: cam.clips.map(cl => { const s = clipStartOf(cam, cl); return [s, s + cl.duration * 1000]; }) }));
     m.sources.forEach((src, i) => {
       const l = (this.channels.get(src.id) || {}).list || [];
       if (!l.length) return;

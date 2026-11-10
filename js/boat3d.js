@@ -205,7 +205,7 @@ class Boat3DPanel {
     this.dist = 0; this.lastT = null; this.att = null;
     const ch = pickChannels(this.S);
     this.ch = { heel: ch.heel, pitch: ch.pitch, hdg: this.S.channels.find(c => c.role === 'hdg' && !c.derived) || this.S.cog, sog: this.S.sog };
-    if (!this.ch.heel && !this.ch.pitch) { this.msg.hidden = false; this.msg.textContent = 'Servono heel e trim (dal telefono del Logger o dalla GoPro).'; return; }
+    if (!this.ch.heel && !this.ch.pitch) { this.msg.hidden = false; this.msg.textContent = 'Servono heel e trim dal telefono del Logger (quelli della GoPro non si usano: la camera non è fissata alla barca).'; return; }
     loadThree().then(T => this.init(T)).catch(() => { this.msg.hidden = false; this.msg.textContent = 'Non riesco a caricare la grafica 3D in questo browser.'; });
   }
   title() { return 'Nacra 17 in 3D'; }

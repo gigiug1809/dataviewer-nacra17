@@ -23,6 +23,9 @@ function theme() { return document.documentElement.dataset.theme === 'light' ? '
 function seriesColor(i) { const p = PALETTE[theme()]; return p[i % p.length]; }
 function eventColor(type) { const e = EVT[type]; return !e || e.slot < 0 ? (theme() === 'light' ? '#7a7a74' : '#a3a29a') : seriesColor(e.slot); }
 
+// ora d'inizio di uno spezzone: ora del file + correzione della camera + affinamento del singolo spezzone
+function clipStartOf(cam, clip) { return clip.start + (Number(cam.offset) || 0) + (Number(clip.fine) || 0); }
+
 const SRC_PRIORITY = { Vakaros: 0, iPhone: 0, FIT: 1, GPX: 1, TCX: 1, CSV: 2, GoPro: 3, Cyclops: 4 };
 
 class Session {
@@ -66,6 +69,20 @@ class Session {
     }
     this.mergeLogger();
     this.derive();
+    // GoPro già sincronizzate col giroscopio: le affino clip per clip sul telefono (una volta sola, resta nell'uscita)
+    if (!this.live) for (const cam of m.cameras) {
+      if (!needsFineSync(cam)) continue;
+      progress(`Sincronizzo ${cam.name} con il telefono…`, 0.95);
+      try {
+        const r = await fineSyncCamera(this, cam);
+        if (r.changed) {
+          this.metaChanged = true; this.fineReport = (this.fineReport || []).concat(r);
+          this.channels = this.channels.filter(c => c.src !== cam.id);
+          this.channels.push(...await this.loadCamTelemetry(cam));
+          this.derive();
+        }
+      } catch (e) { /* resta la sincronizzazione di prima */ }
+    }
     progress('Pronto', 1);
   }
 
@@ -136,48 +153,21 @@ class Session {
     try { await Store.writeJSON(cachePath, out); } catch (e) { /* la cache è facoltativa */ }
     return out;
   }
+  /* Dati della GoPro: solo la posizione e la velocità del suo GPS (se era acceso).
+     Heel, trim, rotazione e urti della GoPro NON si usano: la camera non è fissata in modo
+     rigido alla barca e il supporto si muove per conto suo. */
   async loadCamTelemetry(cam) {
     if (cam.telemetry === false) return [];
-    const att = [], acc = [], pts = [], yaw = [];
+    const pts = [];
     for (const clip of cam.clips) {
       if (!/gopro|hero/i.test(clip.device || '') && !clip.gpmd) continue;
       let tel = null;
       try { tel = await this.readTelemetry(clip); } catch (e) { continue; }
       if (!tel) continue;
       const s = this.clipStart(cam, clip);
-      for (const a of tel.att) att.push([s + a[0] * 1000, a[1], a[2]]);
-      for (const a of tel.acc) acc.push([s + a[0] * 1000, a[1]]);
-      for (const a of tel.yaw || []) yaw.push([s + a[0] * 1000, a[1]]);
       for (const p of tel.pts) pts.push([s + p[0] * 1000, p[1], p[2], p[3]]);
     }
     const out = [], id = cam.id, srcName = `Camera ${cam.name}`;
-    const med = arr => { const v = arr.slice().sort((a, b) => a - b); return v.length ? v[v.length >> 1] : 0; };
-    // gli angoli della GoPro possono stare vicino a ±180° (camera montata capovolta):
-    // lo zero è la mediana "sul cerchio" e le differenze restano tra -180° e 180°, senza salti di 360°
-    const wrap = a => ((a + 180) % 360 + 360) % 360 - 180, R = Math.PI / 180;
-    const cmed = arr => {
-      let s = 0, c = 0; for (const a of arr) { s += Math.sin(a * R); c += Math.cos(a * R); }
-      const m0 = Math.atan2(s, c) / R;
-      return wrap(m0 + med(arr.map(a => wrap(a - m0))));
-    };
-    if (att.length > 10) {
-      att.sort((a, b) => a[0] - b[0]);
-      const T = Float64Array.from(att, a => a[0]);
-      const hz = cam.heelZero != null && cam.heelZero !== '' ? Number(cam.heelZero) : cmed(att.filter((_, i) => i % 5 === 0).map(a => a[1]));
-      const pz = cam.pitchZero != null && cam.pitchZero !== '' ? Number(cam.pitchZero) : cmed(att.filter((_, i) => i % 5 === 0).map(a => a[2]));
-      cam._autoZero = { heel: hz, pitch: pz };
-      const sh = cam.heelInv ? -1 : 1, sp = cam.pitchInv ? -1 : 1;
-      out.push(makeChannel({ id: `${id}:heel`, name: `Heel (${cam.name})`, unit: '°', role: 'heel', src: id, srcName, t: T, v: Float64Array.from(att, a => sh * wrap(a[1] - hz)), dec: 1 }));
-      out.push(makeChannel({ id: `${id}:pitch`, name: `Trim (${cam.name})`, unit: '°', role: 'pitch', src: id, srcName, t: T, v: Float64Array.from(att, a => sp * wrap(a[2] - pz)), dec: 1 }));
-    }
-    if (acc.length > 10) {
-      acc.sort((a, b) => a[0] - b[0]);
-      out.push(makeChannel({ id: `${id}:acc`, name: `Accelerazione picco (${cam.name})`, unit: 'g', role: 'other', src: id, srcName, t: Float64Array.from(acc, a => a[0]), v: Float64Array.from(acc, a => a[1]), dec: 2 }));
-    }
-    if (yaw.length > 10) {
-      yaw.sort((a, b) => a[0] - b[0]);
-      out.push(makeChannel({ id: `${id}:yaw`, name: `Velocità di rotazione (${cam.name})`, unit: '°/s', role: 'other', src: id, srcName, t: Float64Array.from(yaw, a => a[0]), v: Float64Array.from(yaw, a => a[1]), dec: 0 }));
-    }
     if (pts.length > 10) {
       pts.sort((a, b) => a[0] - b[0]);
       const T = Float64Array.from(pts, p => p[0]);
@@ -186,6 +176,20 @@ class Session {
       out.push(makeChannel({ id: `${id}:sog`, name: `Velocità GPS (${cam.name})`, unit: 'kn', role: 'sog', src: id, srcName, t: T, v: Float64Array.from(pts, p => p[3] * KN), dec: 1 }));
     }
     out.forEach(c => { c.srcKind = 'GoPro'; });
+    return out;
+  }
+  /* Rotazione della GoPro attorno alla verticale (°/s), clip per clip: serve SOLO a trovare l'ora
+     esatta del video (quando la barca vira, la camera gira nello stesso istante). Non è un dato. */
+  async camMotion(cam) {
+    const out = [];
+    for (const clip of cam.clips) {
+      if (!/gopro|hero/i.test(clip.device || '') && !clip.gpmd) continue;
+      let tel = null;
+      try { tel = await this.readTelemetry(clip); } catch (e) { continue; }
+      if (!tel || !tel.yaw || tel.yaw.length < 10) continue;
+      const s = this.clipStart(cam, clip);
+      out.push({ clip, t: Float64Array.from(tel.yaw, a => s + a[0] * 1000), v: Float64Array.from(tel.yaw, a => a[1]), step: 100, gap: 1000 });
+    }
     return out;
   }
 
@@ -249,7 +253,7 @@ class Session {
   roleChannels(role) { return this.channels.filter(c => c.role === role); }
 
   /* ---------- Video ---------- */
-  clipStart(cam, clip) { return clip.start + (Number(cam.offset) || 0); }
+  clipStart(cam, clip) { return clipStartOf(cam, clip); }
   clipAt(cam, t) {
     for (const cl of cam.clips) { const s = this.clipStart(cam, cl); if (t >= s && t < s + cl.duration * 1000) return cl; }
     return null;

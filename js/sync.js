@@ -42,10 +42,9 @@ function corrShift(A, B, shift, minN) {
   return { r: va > 0 && vb > 0 ? (sab - sa * sb / n) / Math.sqrt(va * vb) : 0, n };
 }
 
-/* GoPro: giroscopio della camera contro le virate del GPS */
-function syncCameraByGyro(S, cam, maxLagMs = 3 * 3600e3) {
-  const yaw = S.ch(`${cam.id}:yaw`);
-  if (!yaw) return { ok: false, why: 'Il video non ha il giroscopio (serve una GoPro).' };
+/* GoPro: giroscopio della camera contro le virate del GPS (yaw = rotazione della camera, da camMotion) */
+function syncCameraByGyro(S, cam, yaw, maxLagMs = 3 * 3600e3) {
+  if (!yaw || yaw.t.length < 10) return { ok: false, why: 'Il video non ha il giroscopio (serve una GoPro).' };
   const refs = S.channels.filter(c => (c.role === 'cog' || c.role === 'hdg') && c.src !== cam.id);
   if (!refs.length) return { ok: false, why: 'Manca una rotta GPS da confrontare: carica i dati dell\'orologio, del Vakaros o di un altro GPS.' };
   // preferisco la rotta della fonte con l'orologio del satellite
@@ -81,6 +80,69 @@ function syncCameraByGyro(S, cam, maxLagMs = 3 * 3600e3) {
   const r = Math.abs(bestR), conf = r >= 0.55 && r - second >= 0.15 ? 'alta' : r >= 0.4 && r - second >= 0.08 ? 'media' : 'bassa';
   if (conf === 'bassa') return { ok: false, why: `Il confronto non è affidabile (somiglianza ${fmtNum(r * 100, 0)}%). Succede se la camera non è fissata alla barca o se in quel tratto non ci sono virate.`, r, second };
   return { ok: true, offset: bestMs, r, second, conf, ref: `${ref.name} (${ref.srcName})`, n: fine[2] };
+}
+
+/* Affinamento clip per clip: la rotazione della GoPro contro quella del telefono fissato alla barca
+   (25 campioni al secondo). Ogni spezzone GoPro ha l'ora d'inizio al secondo intero, quindi ognuno
+   può sbagliare di un secondo a modo suo: cerco lo sfasamento di ognuno entro ±8 s, al ventesimo di secondo.
+   Si usa solo il "quando" della rotazione, non quanto gira: va bene anche se il supporto flette. */
+const FINE_STEP = 50, FINE_MAX = 8000;
+function needsFineSync(cam) {
+  return cam.clips.some(c => c.gpmd) && !cam.clips.every(c => c.startSrc === 'gps')
+    && !!cam.sync && cam.sync.method === 'gyro' && !cam.fineSync;
+}
+function fineRef(S) {
+  // la velocità di rotazione di uno strumento fissato alla barca (il telefono del Logger o live)
+  const list = S.channels.filter(c => !c.derived && /yaw_rate_dps$|^live:.*yaw/i.test(c.id) && c.t.length > 100);
+  list.sort((a, b) => chanRank(S, a) - chanRank(S, b) || b.t.length - a.t.length);
+  return list[0] || null;
+}
+function fineLag(part, ref) {
+  const step = FINE_STEP, L = Math.round(FINE_MAX / step);
+  const t0 = part.t[0], n = Math.floor((part.t[part.t.length - 1] - t0) / step);
+  const minN = Math.round(3 * 60e3 / step); // almeno 3 minuti in comune
+  if (n < minN) return { ok: false, why: 'spezzone troppo corto' };
+  const A = smoothArr(resample(part, t0, step, n), 1);
+  const B = smoothArr(resample(ref, t0 - L * step, step, n + 2 * L), 2);
+  const rs = new Float64Array(2 * L + 1);
+  let bi = -1;
+  for (let k = 0; k <= 2 * L; k++) {
+    const c = corrShift(A, B, k, minN);
+    rs[k] = Math.abs(c.r);
+    if (c.n >= minN && (bi < 0 || rs[k] > rs[bi])) bi = k;
+  }
+  if (bi < 0 || !(rs[bi] > 0)) return { ok: false, why: 'il telefono non registrava durante questo spezzone' };
+  // picco tra due campioni (parabola)
+  let sub = 0;
+  if (bi > 0 && bi < 2 * L) { const a = rs[bi - 1], b = rs[bi], c = rs[bi + 1], d = a - 2 * b + c; if (d < 0) sub = Math.max(-0.5, Math.min(0.5, 0.5 * (a - c) / d)); }
+  let second = 0;
+  for (let k = 0; k <= 2 * L; k++) if (Math.abs(k - bi) * step > 3000) second = Math.max(second, rs[k]);
+  const r = rs[bi], conf = r >= 0.6 && r - second >= 0.1 ? 'alta' : r >= 0.45 && r - second >= 0.05 ? 'media' : 'bassa';
+  // B[k + bi] è il telefono all'ora t0 + (k + bi - L)·step: l'evento che la GoPro segna a t0 + k·step è avvenuto (bi - L)·step dopo
+  return { ok: conf !== 'bassa', shift: Math.round((bi - L + sub) * step), r, second, conf };
+}
+async function fineSyncCamera(S, cam) {
+  const ref = fineRef(S);
+  if (!ref) return { ok: false, changed: false, why: 'manca la rotazione del telefono del Logger' };
+  const parts = await S.camMotion(cam);
+  if (!parts.length) return { ok: false, changed: false, why: 'la GoPro non ha il giroscopio' };
+  const clips = [];
+  let changed = false;
+  for (const p of parts) {
+    const r = fineLag(p, ref);
+    const name = p.clip.file.split('/').pop();
+    if (!r.ok) { clips.push({ file: name, ok: false, why: r.why || `somiglianza bassa (${fmtNum(r.r * 100, 0)}%)` }); continue; }
+    p.clip.fine = Math.round((Number(p.clip.fine) || 0) + r.shift);
+    clips.push({ file: name, ok: true, shift: r.shift, r: Math.round(r.r * 100) / 100, conf: r.conf });
+    changed = true;
+  }
+  cam.fineSync = { at: Date.now(), ref: `${ref.name} (${ref.srcName})`, clips };
+  return { ok: clips.some(c => c.ok), changed: true, cam: cam.name, clips, ref: cam.fineSync.ref, moved: changed };
+}
+function fineText(r) {
+  const ok = r.clips.filter(c => c.ok), bad = r.clips.filter(c => !c.ok);
+  return (ok.length ? `affinata spezzone per spezzone sulla rotazione di ${r.ref}: ` + ok.map(c => `${c.file} ${fmtOffset(c.shift)}`).join(', ') : 'affinamento non riuscito')
+    + (bad.length ? ` · non affinati: ${bad.map(c => `${c.file} (${c.why})`).join(', ')}` : '');
 }
 
 /* Fonti di dati con posizione e orologio non GPS (Cyclops, CSV): allineo la traccia a quella di un GPS */
@@ -121,10 +183,27 @@ async function autoSync(folder, meta, { force = false, onStep } = {}) {
     if (cam.clips.every(c => c.startSrc === 'gps')) { report.push({ what: cam.name, ok: true, text: 'ora presa dal GPS della GoPro: già esatta' }); continue; }
     if (cam.clips.every(c => c.startSrc === 'logger')) { report.push({ what: cam.name, ok: true, text: 'video del Logger: già allineato ai dati' }); continue; }
     if (!force && cam.sync && cam.sync.method === 'manual') { report.push({ what: cam.name, ok: true, text: 'sincronizzata a mano: non la tocco' }); continue; }
-    if (!force && cam.sync && cam.sync.method === 'gyro') { report.push({ what: cam.name, ok: true, text: `sincronizzata con il giroscopio (affidabilità ${cam.sync.conf})` }); continue; }
+    if (!force && cam.sync && cam.sync.method === 'gyro') {
+      if (needsFineSync(cam)) {
+        onStep && onStep(`Affino ${cam.name} sul telefono…`);
+        const f = await fineSyncCamera(S, cam);
+        if (f.changed) { changed = true; report.push({ what: cam.name, ok: f.ok, text: fineText(f) }); continue; }
+      }
+      report.push({ what: cam.name, ok: true, text: `sincronizzata con il giroscopio (affidabilità ${cam.sync.conf})` + (cam.fineSync && cam.fineSync.clips.some(c => c.ok) ? ', affinata spezzone per spezzone sul telefono' : '') });
+      continue;
+    }
     onStep && onStep(`Confronto il giroscopio di ${cam.name} con le virate…`);
-    const r = syncCameraByGyro(S, cam);
+    // si riparte da zero: via gli affinamenti dei singoli spezzoni (li rimetto se il confronto non riesce)
+    const keep = { fine: cam.clips.map(cl => cl.fine), fineSync: cam.fineSync };
+    for (const cl of cam.clips) delete cl.fine;
+    delete cam.fineSync;
+    const parts = await S.camMotion(cam);
+    const pairs = parts.flatMap(p => Array.from(p.t, (t, i) => [t, p.v[i]])).sort((a, b) => a[0] - b[0]);
+    const yaw = pairs.length ? { t: Float64Array.from(pairs, a => a[0]), v: Float64Array.from(pairs, a => a[1]), step: 100, gap: 1000 } : null;
+    const r = syncCameraByGyro(S, cam, yaw);
     if (!r.ok) {
+      cam.clips.forEach((cl, i) => { if (keep.fine[i] != null) cl.fine = keep.fine[i]; });
+      if (keep.fineSync) cam.fineSync = keep.fineSync;
       const phone = cam.clips.some(c => c.samsung || c.appleStart || c.startSrc === 'filename' || c.startSrc === 'mvhd-end');
       report.push({ what: cam.name, ok: phone, text: phone ? 'video del telefono: ora presa da nome e metadati (precisione di circa 1 s)' : r.why });
       continue;
@@ -133,6 +212,9 @@ async function autoSync(folder, meta, { force = false, onStep } = {}) {
     cam.sync = { method: 'gyro', conf: r.conf, r: Math.round(r.r * 100) / 100, ref: r.ref, at: Date.now() };
     report.push({ what: cam.name, ok: true, text: `sincronizzata con il giroscopio sulle virate di ${r.ref}: correzione ${fmtOffset(r.offset)} (affidabilità ${r.conf})` });
     changed = true;
+    onStep && onStep(`Affino ${cam.name} sul telefono…`);
+    const f = await fineSyncCamera(S, cam);
+    if (f.changed) report.push({ what: cam.name, ok: f.ok, text: fineText(f) });
   }
   return { report, changed };
 }

@@ -22,6 +22,11 @@ const Viewer = {
     const S = this.S = new Session(folder, meta);
     await S.load((msg, p) => { load.querySelector('span').textContent = msg; load.querySelector('.progress i').style.width = (p * 100) + '%'; });
     if (!this.open_ || this.S !== S) return;
+    if (S.metaChanged) {
+      S.save();
+      const moved = (S.fineReport || []).flatMap(r => r.clips || []).filter(c => c.ok);
+      if (moved.length) toast(`Video GoPro sincronizzati con il telefono, spezzone per spezzone (${moved.map(c => fmtOffset(c.shift)).join(', ')}).`, 7000);
+    }
     // dashboard: vivono nella libreria e valgono per tutte le giornate. La giornata usa quella scelta per lei
     // (meta.dash), altrimenti l'ultima usata; meta.dash = null vuol dire "disposizione solo di questa giornata".
     this.dashName = null;
