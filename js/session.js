@@ -152,15 +152,23 @@ class Session {
     }
     const out = [], id = cam.id, srcName = `Camera ${cam.name}`;
     const med = arr => { const v = arr.slice().sort((a, b) => a - b); return v.length ? v[v.length >> 1] : 0; };
+    // gli angoli della GoPro possono stare vicino a ±180° (camera montata capovolta):
+    // lo zero è la mediana "sul cerchio" e le differenze restano tra -180° e 180°, senza salti di 360°
+    const wrap = a => ((a + 180) % 360 + 360) % 360 - 180, R = Math.PI / 180;
+    const cmed = arr => {
+      let s = 0, c = 0; for (const a of arr) { s += Math.sin(a * R); c += Math.cos(a * R); }
+      const m0 = Math.atan2(s, c) / R;
+      return wrap(m0 + med(arr.map(a => wrap(a - m0))));
+    };
     if (att.length > 10) {
       att.sort((a, b) => a[0] - b[0]);
       const T = Float64Array.from(att, a => a[0]);
-      const hz = cam.heelZero != null && cam.heelZero !== '' ? Number(cam.heelZero) : med(att.filter((_, i) => i % 5 === 0).map(a => a[1]));
-      const pz = cam.pitchZero != null && cam.pitchZero !== '' ? Number(cam.pitchZero) : med(att.filter((_, i) => i % 5 === 0).map(a => a[2]));
+      const hz = cam.heelZero != null && cam.heelZero !== '' ? Number(cam.heelZero) : cmed(att.filter((_, i) => i % 5 === 0).map(a => a[1]));
+      const pz = cam.pitchZero != null && cam.pitchZero !== '' ? Number(cam.pitchZero) : cmed(att.filter((_, i) => i % 5 === 0).map(a => a[2]));
       cam._autoZero = { heel: hz, pitch: pz };
       const sh = cam.heelInv ? -1 : 1, sp = cam.pitchInv ? -1 : 1;
-      out.push(makeChannel({ id: `${id}:heel`, name: `Heel (${cam.name})`, unit: '°', role: 'heel', src: id, srcName, t: T, v: Float64Array.from(att, a => sh * (a[1] - hz)), dec: 1 }));
-      out.push(makeChannel({ id: `${id}:pitch`, name: `Trim (${cam.name})`, unit: '°', role: 'pitch', src: id, srcName, t: T, v: Float64Array.from(att, a => sp * (a[2] - pz)), dec: 1 }));
+      out.push(makeChannel({ id: `${id}:heel`, name: `Heel (${cam.name})`, unit: '°', role: 'heel', src: id, srcName, t: T, v: Float64Array.from(att, a => sh * wrap(a[1] - hz)), dec: 1 }));
+      out.push(makeChannel({ id: `${id}:pitch`, name: `Trim (${cam.name})`, unit: '°', role: 'pitch', src: id, srcName, t: T, v: Float64Array.from(att, a => sp * wrap(a[2] - pz)), dec: 1 }));
     }
     if (acc.length > 10) {
       acc.sort((a, b) => a[0] - b[0]);

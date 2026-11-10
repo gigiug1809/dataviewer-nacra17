@@ -4,9 +4,18 @@
    - i tratti segnati dall'allenatore (Inizia / Fine tratto) */
 'use strict';
 
+// da quale strumento viene un canale: 0 = telefono fissato alla barca (Logger o live),
+// 1 = altri strumenti, 2 = GoPro (si muove col suo supporto, l'assetto è meno affidabile)
+function chanRank(S, c) {
+  const src = ((S.meta && S.meta.sources) || []).find(s => s.id === c.src) || {};
+  const kind = c.srcKind || src.kind || '';
+  if (/^live:/.test(c.id) || /iPhone/i.test(kind)) return 0;
+  if (/GoPro/i.test(kind)) return 2;
+  return 1;
+}
 // i canali da usare per ogni misura (preferisco il telefono fissato alla barca)
 function pickChannels(S) {
-  const pref = list => list.sort((a, b) => (/^live:|iPhone/.test(b.srcKind || '') ? 1 : 0) - (/^live:|iPhone/.test(a.srcKind || '') ? 1 : 0))[0] || null;
+  const pref = list => list.sort((a, b) => chanRank(S, a) - chanRank(S, b))[0] || null;
   const by = (test) => pref(S.channels.filter(test));
   return {
     sog: S.sog,
