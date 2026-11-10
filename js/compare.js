@@ -273,7 +273,9 @@ function showCompare(V, segs) {
       map ? h('div', null, h('div', { class: 'sm-gh' }, 'Tracce'), map) : null));
   };
   draw();
-  modal({ title: `Confronto di ${segs.length} tratti`, body, wide: true, actions: [{ label: 'Chiudi', kind: 'primary' }] });
+  modal({ title: `Confronto di ${segs.length} tratti`, body, wide: true, actions: [
+    { label: 'Velocità e manovre nel dettaglio', run: () => { setTimeout(() => showPerformance(V, { segs, tab: 'velocita' }), 30); } },
+    { label: 'Chiudi', kind: 'primary' }] });
 }
 
 /* scelta dei tratti da confrontare (se nel pannello Eventi non ne è spuntato nessuno) */

@@ -562,6 +562,7 @@ function showRangeAnalysis(V, a, b, title) {
   const saved = S.meta.events.some(e => e.type === 'tratto' && Math.abs(e.t - a) < 1500 && e.t2 != null && Math.abs(e.t2 - b) < 1500);
   modal({ title: title || 'Riepilogo del tratto', body: segmentSummary(S, a, b, V), wide: true, actions: [
     { label: 'Esporta i dati (CSV)', run: () => { V.inT = a; V.outT = b; V.exportRange(); return false; } },
+    { label: 'Velocità e manovre', run: () => { const e = S.meta.events.find(x => x.type === 'tratto' && Math.abs(x.t - a) < 1500 && x.t2 != null && Math.abs(x.t2 - b) < 1500); setTimeout(() => showPerformance(V, { segs: [e || { t: a, t2: b, note: title || 'Selezione' }] }), 30); } },
     saved ? null : { label: 'Salva come tratto', run: () => { addSegment(V, a, b); } },
     { label: 'Chiudi', kind: 'primary' }].filter(Boolean) });
 }

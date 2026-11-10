@@ -528,3 +528,24 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-
 .cmp-mapbox { display: grid; gap: 4px; }
 .cmp-map { width: 100%; max-width: 340px; aspect-ratio: 1; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; }
 .ev-pick { margin: 0 6px 0 0; vertical-align: middle; }
+
+/* prestazioni: velocità e manovre */
+.modal.wide:has(.pf) { width: min(1180px, 100%); }
+.pf { display: grid; gap: 10px; }
+.pf-chips, .pf-ctrl, .pf-tabs { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.pf-seg { display: inline-flex; gap: 3px; flex-wrap: wrap; }
+.pf-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+.pf-legend i { display: inline-block; width: 12px; height: 4px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.pf-tabs { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.pf-chart { overflow-x: auto; max-width: 100%; color: var(--fg); }
+.pf-svg { display: block; font-family: var(--font); }
+.pf-svg .pf-grid { stroke: var(--grid); stroke-width: 1; }
+.pf-svg .pf-zero { stroke: var(--axis); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.pf-svg .pf-cur { stroke: var(--cursor); stroke-width: 1.5; }
+.pf-svg .pf-ax { fill: var(--muted); font-size: 10.5px; }
+.pf-svg .pf-cat { fill: var(--fg); font-size: 11px; font-weight: 600; }
+.pf-grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px 14px; }
+.pf-grid4 { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px 14px; }
+.pf-cols { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 900px) { .pf-cols { grid-template-columns: 1fr; } }
+.pf-tip { top: 6px; min-width: 120px; }

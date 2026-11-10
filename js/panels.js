@@ -846,6 +846,10 @@ class EventsPanel {
         const chosen = this.S.meta.events.filter(e => this.sel.has(e.id) && e.type === 'tratto' && e.t2 != null);
         if (chosen.length >= 2) showCompare(this.V, chosen); else pickSegmentsToCompare(this.V, [...this.sel]);
       } }, 'Confronta tratti'),
+      h('button', { class: 'btn sm', title: 'Velocità nei tratti dritti e manovre sovrapposte (tutta l\'uscita o i tratti spuntati)', onclick: () => {
+        const chosen = this.S.meta.events.filter(e => this.sel.has(e.id) && e.type === 'tratto' && e.t2 != null);
+        showPerformance(this.V, { segs: chosen });
+      } }, 'Prestazioni'),
       h('button', { class: 'btn sm', title: 'Scarica gli eventi in CSV', onclick: () => this.exportCSV() }, 'CSV')));
     this.listBox = h('div', { style: { flex: 1, position: 'relative', minHeight: 0 } });
     this.list = h('div', { class: 'ev-list' });
