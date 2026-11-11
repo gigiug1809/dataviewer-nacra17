@@ -356,7 +356,8 @@ const Editor = {
         this.rebuild(src, false);
         let extra = '';
         if (src.kind === 'iPhone' && !src.live) {
-          const rl = this.replaceLive(src), sg = this.importSegments(data);
+          const rl = this.replaceLive(src), sg = this.importSegments(data), bo = importBuoysInto(this.meta, data);
+          if (bo) { this.save(); extra += ` ${bo} ${bo === 1 ? 'boa segnata' : 'boe segnate'} sul telefono (si vedono sulla mappa).`; }
           if (rl) extra += ` Ha preso il posto dei dati ricevuti in live (stessa registrazione): niente doppioni, eventi e tratti restano.`;
           if (sg) extra += ` Aggiunti ${sg} tratti segnati sul telefono.`;
         }
@@ -606,6 +607,22 @@ function importSegmentsInto(meta, text, save) {
   if (n) { meta.events.sort((a, b) => a.t - b.t); save && save(); }
   return n;
 }
+/* boe segnate col tasto "Boa" del Logger ("# boa <ora> <lat> <lon> ±<m> m"): vanno in meta.buoys.
+   Ogni tocco resta com'è (ora e posizione); la mappa poi unisce i tocchi della stessa boa. Restituisce quante sono nuove. */
+function importBuoysInto(meta, text) {
+  const found = [...text.matchAll(/^# boa (\S+)(?: (-?\d+\.\d+) (-?\d+\.\d+)(?: ±(\d+(?:\.\d+)?) m)?)?/gm)]
+    .map(m => ({ t: Date.parse(m[1]), lat: m[2] != null ? Number(m[2]) : null, lon: m[3] != null ? Number(m[3]) : null, acc: m[4] != null ? Number(m[4]) : null }))
+    .filter(b => isFinite(b.t));
+  if (!found.length) return 0;
+  meta.buoys = meta.buoys || [];
+  let n = 0;
+  for (const b of found) {
+    if (meta.buoys.some(x => Math.abs(x.t - b.t) < 1000)) continue;
+    meta.buoys.push(Object.assign({ id: uid('b'), by: 'telefono' }, b)); n++;
+  }
+  if (n) meta.buoys.sort((a, b) => a.t - b.t);
+  return n;
+}
 /* importa un file del Logger nella giornata del suo giorno (la crea se non c'è).
    Sostituisce i dati ricevuti in live della stessa registrazione; eventi e tratti restano. */
 /* video del Logger (o dell'iPhone): va nella giornata del suo giorno, nella camera "iPhone" */
@@ -696,8 +713,8 @@ async function importPhoneFile(file) {
   const lives = meta.sources.filter(x => x.kind === 'iPhone' && x.live && cfg.recId && x.recId === cfg.recId);
   meta.sources = meta.sources.filter(x => !lives.includes(x));
   meta.sources.push(Object.assign({ id: uid('s'), file: dest, name: 'iPhone' }, cfg));
-  const seg = importSegmentsInto(meta, text);
+  const seg = importSegmentsInto(meta, text), boe = importBuoysInto(meta, text);
   await Store.saveSession(folder, meta);
-  const extra = [lives.length ? 'ha preso il posto dei dati ricevuti in live' : '', seg ? `${seg} ${seg === 1 ? 'tratto' : 'tratti'}` : ''].filter(Boolean).join(', ');
+  const extra = [lives.length ? 'ha preso il posto dei dati ricevuti in live' : '', seg ? `${seg} ${seg === 1 ? 'tratto' : 'tratti'}` : '', boe ? `${boe} ${boe === 1 ? 'boa segnata' : 'boe segnate'}` : ''].filter(Boolean).join(', ');
   return { ok: true, day, folder, msg: `${file.name} → giornata del ${fmtDateLong(day)}${extra ? ' (' + extra + ')' : ''}.` };
 }

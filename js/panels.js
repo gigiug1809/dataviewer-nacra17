@@ -11,6 +11,7 @@ const ICONS = {
   sound: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 7.5h3l4-3.5v12l-4-3.5h-3z"/><path d="M13.5 7a4 4 0 0 1 0 6"/></svg>',
   mute: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 7.5h3l4-3.5v12l-4-3.5h-3z"/><path d="M13.5 8l4 4M17.5 8l-4 4"/></svg>',
   full: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 7.5v-4h4M12.5 3.5h4v4M16.5 12.5v4h-4M7.5 16.5h-4v-4"/></svg>',
+  buoy: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3.5v3"/><path d="M6.5 13.5 8 6.5h4l1.5 7z"/><path d="M3 16.5c2-1.2 3.5-1.2 5 0s3 1.2 4.5 0 3.5-1.2 5 0"/></svg>',
   part: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2.5 15.5c2.5-6 4.5-1 7-5.5s3.5-5 8-6"/><path d="M6 3v14M14 3v14" stroke-dasharray="1.6 2"/></svg>',
   follow: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="3"/><path d="M10 2v3M10 15v3M2 10h3M15 10h3"/></svg>',
   view: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.3 12.3l5 5M6.5 8.5h4M8.5 6.5v4"/></svg>'
@@ -671,6 +672,7 @@ class MapPanel {
     if (cfg.follow == null) cfg.follow = false;
     if (cfg.trail == null) cfg.trail = 60;
     if (cfg.part == null) cfg.part = 'all';   // parte della traccia: all, sel (selezione I–O), custom (barra), around (intorno all'ora)
+    if (cfg.buoys == null) cfg.buoys = true;  // boe segnate col Logger
     this.el = h('div', { class: 'map-box' });
     const pos = this.S.pos;
     if (!pos) { this.el.append(h('div', { class: 'pnl-empty' }, this.S.live ? 'In attesa della posizione GPS dal telefono…' : 'Nessuna posizione GPS: carica un file con latitudine e longitudine (Vakaros, GPX, Cyclops) o accendi il GPS della GoPro.')); return; }
@@ -684,7 +686,14 @@ class MapPanel {
     const pb = h('button', { class: 'icon-btn' + (this.cfg.part !== 'all' ? ' on' : ''), title: 'Quale parte della traccia mostrare', 'aria-label': 'Parte della traccia', html: ICONS.part });
     pb.onclick = e => this.partMenu(e.currentTarget);
     this.partBtn = pb;
-    return [pb, b];
+    const out = [pb, b];
+    // boe segnate col Logger: il tasto c'è solo se ce ne sono
+    if ((this.S.meta.buoys || []).length) {
+      const bb = h('button', { class: 'icon-btn' + (this.cfg.buoys ? ' on' : ''), title: 'Mostra o nascondi le boe segnate col Logger', 'aria-label': 'Boe segnate', html: ICONS.buoy });
+      bb.onclick = () => { this.cfg.buoys = !this.cfg.buoys; bb.classList.toggle('on', this.cfg.buoys); this.drawBuoys(); this.V.layoutChanged(); };
+      out.unshift(bb);
+    }
+    return out;
   }
   /* ---- parte della traccia ---- */
   span() { const p = this.pts || []; return p.length ? [p[0][0], p[p.length - 1][0]] : [0, 0]; }
@@ -807,6 +816,7 @@ class MapPanel {
     L.control.scale({ imperial: false, position: 'bottomright' }).addTo(this.map);
     this.trackLayer = L.layerGroup().addTo(this.map);
     this.evLayer = L.layerGroup().addTo(this.map);
+    this.buoyLayer = L.layerGroup().addTo(this.map);
     this.trail = L.polyline([], { color: dark ? '#ffffff' : '#0b0b0b', weight: 3.5, opacity: .9 }).addTo(this.map);
     const ico = L.divIcon({ className: '', iconSize: [26, 26], iconAnchor: [13, 13], html: `<svg class="boat-ico" viewBox="0 0 26 26"><g><path d="M13 2 L19 22 L13 18 L7 22 Z" fill="${dark ? '#ffffff' : '#0b0b0b'}" stroke="${dark ? '#0e1012' : '#ffffff'}" stroke-width="1.5"/></g></svg>` });
     this.boat = L.marker([pts[0] ? pts[0][1] : 0, pts[0] ? pts[0][2] : 0], { icon: ico, interactive: false, zIndexOffset: 1000 }).addTo(this.map);
@@ -814,6 +824,7 @@ class MapPanel {
     this.el.append(this.legend);
     this.drawTrack();
     this.drawEvents();
+    this.drawBuoys();
     if (this.cfg.part !== 'all') { this.center = this.V.t; this.partChanged(false); this.fitPart(); }
     // clic sulla traccia = vai a quell'istante. Solo se il clic è proprio sulla traccia (14 px),
     // non dopo aver trascinato la mappa e non nel doppio clic che serve a ingrandire.
@@ -888,6 +899,28 @@ class MapPanel {
     }
   }
   eventsChanged() { this.drawEvents(); }
+  /* boe segnate col Logger: un cerchio numerato per boa (i tocchi vicini sono la stessa boa),
+     linea tratteggiata tra due boe segnate una dopo l'altra (la partenza). Sempre tutte, qualunque parte della traccia si guardi. */
+  drawBuoys() {
+    if (!this.buoyLayer) return;
+    this.buoyLayer.clearLayers();
+    if (!this.cfg.buoys) return;
+    const { groups, lines } = buoyGroups(this.S.meta.buoys);
+    const dark = theme() === 'dark', ink = dark ? '#0e1012' : '#ffffff';
+    for (const l of lines) {
+      L.polyline([[l.a.lat, l.a.lon], [l.b.lat, l.b.lon]], { color: dark ? '#f2c94c' : '#b7791f', weight: 2, dashArray: '6 6', opacity: .9 })
+        .bindTooltip(`Linea tra la boa ${l.a.n} e la boa ${l.b.n} · ${fmtNum(l.len, 0)} m · segnata alle ${fmtClock(l.t)}`).addTo(this.buoyLayer);
+    }
+    for (const g of groups) {
+      const ico = L.divIcon({ className: '', iconSize: [22, 22], iconAnchor: [11, 11], html: `<div class="buoy-ico" style="border-color:${ink}">${g.n}</div>` });
+      const times = g.pings.length > 1 ? `segnata ${g.pings.length} volte, ${fmtClock(g.t)}–${fmtClock(g.t2)}` : `segnata alle ${fmtClock(g.t)}`;
+      const acc = g.pings.map(p => p.acc).filter(isFinite);
+      L.marker([g.lat, g.lon], { icon: ico, zIndexOffset: 500 })
+        .bindTooltip(`Boa ${g.n} · ${times}${acc.length ? ` · GPS ±${fmtNum(Math.max(...acc), 0)} m` : ''}`)
+        .on('click', e => { L.DomEvent.stopPropagation(e); this.V.seek(g.t); })
+        .addTo(this.buoyLayer);
+    }
+  }
   update(t) {
     if (!this.map) return;
     // "intorno all'ora attuale": la parte segue il tempo (ridisegno al più ogni 0,4 s)

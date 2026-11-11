@@ -23,6 +23,44 @@ function theme() { return document.documentElement.dataset.theme === 'light' ? '
 function seriesColor(i) { const p = PALETTE[theme()]; return p[i % p.length]; }
 function eventColor(type) { const e = EVT[type]; return !e || e.slot < 0 ? (theme() === 'light' ? '#7a7a74' : '#a3a29a') : seriesColor(e.slot); }
 
+/* Boe segnate col Logger, raggruppate.
+   - Tocchi entro 30 m l'uno dall'altro = la stessa boa (segnata più volte): posizione = media dei tocchi.
+     Anche due tocchi a meno di 15 secondi e 60 m (tasto premuto due volte passando veloci: la barca intanto si è mossa).
+   - Una boa spostata e segnata di nuovo più lontana di 30 m diventa una boa nuova (la vecchia resta, con la sua ora).
+   - Due boe diverse segnate una dopo l'altra entro 10 minuti, distanti tra 30 e 800 m, sono gli estremi di una linea
+     (di solito la partenza: barca giuria e boa; una linea più corta di 50 m non è una partenza). Una boa segnata da sola resta solo un punto. */
+function buoyGroups(list) {
+  const R = 6371008.8, rad = Math.PI / 180;
+  const dist = (a, b) => { const x = (b.lon - a.lon) * rad * Math.cos((a.lat + b.lat) / 2 * rad), y = (b.lat - a.lat) * rad; return R * Math.hypot(x, y); };
+  const pings = (list || []).filter(b => isFinite(b.lat) && isFinite(b.lon) && b.lat != null).slice().sort((a, b) => a.t - b.t);
+  const groups = [], of = new Map();
+  for (const p of pings) {
+    let best = null, bd = 30;
+    for (const g of groups) {
+      const d = dist(g, p), last = g.pings[g.pings.length - 1];
+      if (d < bd) { bd = d; best = g; }
+      else if (!best && p.t - last.t < 15000 && dist(last, p) < 60) best = g;
+    }
+    if (!best) { best = { n: groups.length + 1, lat: p.lat, lon: p.lon, t: p.t, t2: p.t, pings: [] }; groups.push(best); }
+    best.pings.push(p); best.t2 = p.t;
+    best.lat = best.pings.reduce((s, q) => s + q.lat, 0) / best.pings.length;
+    best.lon = best.pings.reduce((s, q) => s + q.lon, 0) / best.pings.length;
+    of.set(p, best);
+  }
+  const lines = [], seen = new Set();
+  for (let i = 1; i < pings.length; i++) {
+    const gp = of.get(pings[i]);
+    for (let j = i - 1; j >= 0 && pings[i].t - pings[j].t <= 10 * 60000; j--) {
+      const gq = of.get(pings[j]);
+      if (gq === gp) continue;
+      const d = dist(gq, gp), k = [gq.n, gp.n].sort((a, b) => a - b).join('-');
+      if (d >= 50 && d <= 800 && !seen.has(k)) { seen.add(k); lines.push({ a: gq, b: gp, len: d, t: pings[i].t }); }
+      break;
+    }
+  }
+  return { groups, lines };
+}
+
 // ora d'inizio di uno spezzone: ora del file + correzione della camera + affinamento del singolo spezzone
 function clipStartOf(cam, clip) { return clip.start + (Number(cam.offset) || 0) + (Number(clip.fine) || 0); }
 
@@ -96,6 +134,8 @@ class Session {
       return buildTrackChannels(track, src, src.id, src.name);
     }
     const text = await Store.readText(this.path(src.file));
+    // boe segnate col Logger: se nel file ce ne sono che l'uscita non conosce ancora, le aggiungo (e poi si salva)
+    if (src.kind === 'iPhone' && !src.live && !this.live && typeof importBuoysInto === 'function' && importBuoysInto(this.meta, text)) this.metaChanged = true;
     const tab = parseTable(text), cols = analyzeCols(tab);
     const out = buildChannels(tab, cols, Object.assign({ baseDate: this.meta.date }, src), src.id, src.name);
     for (const c of out) if (/:gps_hacc_m$/.test(c.id)) c.quiet = true; // serve per la qualità dei dati, non va proposto nei pannelli
