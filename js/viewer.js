@@ -659,6 +659,7 @@ const Viewer = {
       this.outT != null ? h('button', { class: 'btn sm primary', onclick: () => showRangeAnalysis(this, this.inT, this.outT) }, 'Analizza') : null,
       this.outT != null ? h('button', { class: 'btn sm', onclick: () => this.exportRange() }, 'Esporta CSV') : null,
       h('button', { class: 'icon-btn', title: 'Togli la selezione (X)', 'aria-label': 'Togli la selezione', onclick: () => this.clearRange() }, '✕'));
+    for (const r of (this.panels || new Map()).values()) if (r.inst && r.inst.rangeChanged) r.inst.rangeChanged();
     this.requestDraw(); this.saveViewSoon();
   },
   exportRange() {
@@ -851,6 +852,8 @@ function portableCfg(S, cfg) {
   // stili delle linee (colore, grafico, tratto): da id della giornata a "nome|strumento"
   if (cfg.st) { out.st = {}; for (const [id, v] of Object.entries(cfg.st)) { const c = S.ch(id); if (c) out.st[`${c.name}|${c.srcName}`] = v; else if (id.includes('|')) out.st[id] = v; } }
   if (cfg.cam) out.cam = S.meta.cameras.findIndex(c => c.id === cfg.cam);
+  // la parte di traccia scelta con la barra è un orario di quella giornata: non vale per le altre
+  delete out.from; delete out.to;
   return out;
 }
 function resolveCfg(S, cfg, type) {

@@ -209,13 +209,15 @@ const Home = {
     const nv = items.filter(x => VIDEO_RE.test(x.f.name)).length;
     let iv = 0;
     const done = [];   // importati (o già presenti) dalla cartella "Da importare"
+    const days = new Set();   // giorni con dati arrivati adesso: lì può andare anche una GoPro senza GPS
     for (const { f, handle } of items) {
       let r;
       if (VIDEO_RE.test(f.name)) {
         iv++;
-        try { r = await importPhoneVideo(f, label => toast(`Video ${iv} di ${nv}: ${label}`, 2500), opt.inbox ? handle : null); } catch (e) { r = { ok: false, msg: `${f.name}: ${errMsg(e)}` }; }
+        try { r = await importPhoneVideo(f, label => toast(`Video ${iv} di ${nv}: ${label}`, 2500), opt.inbox ? handle : null, days); } catch (e) { r = { ok: false, msg: `${f.name}: ${errMsg(e)}` }; }
       } else if (!/\.csv$/i.test(f.name)) r = { ok: false, msg: `${f.name}: qui si importano dati (.csv) e video del Logger. Garmin e Cyclops si caricano aprendo la giornata.` };
       else { try { r = await importPhoneFile(f); } catch (e) { r = { ok: false, msg: `${f.name}: ${errMsg(e)}` }; } }
+      if (r.ok && r.day) days.add(r.day);
       out.push(r);
       if (opt.inbox && r.ok && !r.moved) done.push({ f, handle });
     }
@@ -233,13 +235,23 @@ const Home = {
       if (kept) await Store.writeJSON(`${opt.inbox}/.importati.json`, opt.ledger);
       if (kept) out.push({ ok: true, msg: `${kept} ${kept === 1 ? 'file è rimasto' : 'file sono rimasti'} in «${opt.inbox}» (Chrome non permette di spostarli): sono già importati e non verranno importati di nuovo. Puoi cancellarli quando vuoi.` });
     }
-    const days = [...new Set(out.filter(r => r.folder).map(r => r.folder))];
+    // GoPro senza GPS: sincronizzazione automatica con i dati della giornata (giroscopio sulle virate, poi spezzone per spezzone sul telefono)
+    for (const folder of [...new Set(out.filter(r => r.ok && r.gopro && !r.dup).map(r => r.folder))]) {
+      try {
+        const meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
+        toast(`Sincronizzo i video GoPro con i dati del ${fmtDateLong(meta.date)}…`, 4000);
+        const rs = await autoSync(folder, meta, { onStep: m => toast(m, 3000) });
+        if (rs.changed) await Store.saveSession(folder, meta);
+        for (const x of rs.report) if (meta.cameras.some(c => c.name === x.what && c.clips.some(cl => cl.gpmd))) out.push({ ok: x.ok, msg: `${x.what} (${fmtDateLong(meta.date)}): ${x.text}` });
+      } catch (e) { out.push({ ok: false, msg: `Sincronizzazione GoPro non riuscita: ${errMsg(e)}. Puoi rifarla aprendo la giornata (Video e dati).` }); }
+    }
+    const days2 = [...new Set(out.filter(r => r.folder).map(r => r.folder))];
     const last = out.filter(r => r.day).pop();
     if (last) { const [yy, mm] = last.day.split('-').map(Number); this.month = [yy, mm - 1]; }
     await this.render();
     modal({ title: 'Importazione dal telefono', wide: true, body: h('div', { style: { display: 'grid', gap: '8px' } }, out.map(r => h('div', { class: 'row', style: { gap: '8px' } }, h('span', { class: 'dot', style: { background: r.ok ? 'var(--good)' : 'var(--warn)' } }), h('span', null, r.msg))),
-      h('p', { class: 'stat' }, 'Ogni registrazione e ogni video vanno nella giornata del loro giorno. I video del Logger sono già allineati ai dati. Se quel giorno avevi salvato i dati del Live, il file del telefono prende il loro posto: niente doppioni, eventi e tratti restano.')),
-      actions: [{ label: 'Chiudi' }, ...(days.length === 1 ? [{ label: 'Apri la giornata', kind: 'primary', run: () => Router.go(`#/uscita/${encodeURIComponent(days[0])}/viewer`) }] : [])] });
+      h('p', { class: 'stat' }, 'Ogni registrazione e ogni video vanno nella giornata del loro giorno. I video del Logger sono già allineati ai dati; quelli della GoPro vengono sincronizzati da soli. Se quel giorno avevi salvato i dati del Live, il file del telefono prende il loro posto: niente doppioni, eventi e tratti restano.')),
+      actions: [{ label: 'Chiudi' }, ...(days2.length === 1 ? [{ label: 'Apri la giornata', kind: 'primary', run: () => Router.go(`#/uscita/${encodeURIComponent(days2[0])}/viewer`) }] : [])] });
   },
   async welcome(page) {
     const rec = await Store.remembered();

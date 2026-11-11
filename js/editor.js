@@ -609,18 +609,23 @@ function importSegmentsInto(meta, text, save) {
 /* importa un file del Logger nella giornata del suo giorno (la crea se non c'è).
    Sostituisce i dati ricevuti in live della stessa registrazione; eventi e tratti restano. */
 /* video del Logger (o dell'iPhone): va nella giornata del suo giorno, nella camera "iPhone" */
-async function importPhoneVideo(file, onStep, handle = null) {
+async function importPhoneVideo(file, onStep, handle = null, days = null) {
   const clip = await probeClip(file);
-  if (!['logger', 'apple', 'gps'].includes(clip.startSrc)) return { ok: false, msg: `${file.name}: non trovo l'ora esatta del video. Caricalo aprendo la giornata (Video e dati).` };
+  // GoPro senza GPS: l'ora del suo orologio basta per trovare il giorno; quella esatta la trova poi la sincronizzazione
+  const gopro = !!(clip.gpmd || clip.gopro);
+  if (!['logger', 'apple', 'gps'].includes(clip.startSrc) && !gopro) return { ok: false, msg: `${file.name}: non trovo l'ora esatta del video. Caricalo aprendo la giornata (Video e dati).` };
   const day = ymdOf(clip.start);
+  if (gopro && clip.startSrc !== 'gps' && !(days && days.has(day)) && !(await Store.listSessions()).some(x => x.meta.date === day))
+    return { ok: false, msg: `${file.name}: secondo l'orologio della GoPro è del ${fmtDateLong(day)}, ma quel giorno non ci sono dati. Controlla data e ora della GoPro, oppure caricalo aprendo la giornata giusta (Video e dati).` };
   const folder = await Store.dayFolder(day);
   const meta = await Store.readJSON(`${folder}/${SESSION_FILE}`);
   // AirDrop rinomina i doppioni ("N17_… 2.mov"): tengo il nome originale e riconosco il video dall'ora
   const dest = `video/${file.name.replace(/ \d+(\.\w+)$/, '$1')}`;
   if (meta.cameras.some(c => c.clips.some(cl => cl.file === dest || (Math.abs(cl.start - clip.start) < 50 && Math.abs(cl.duration - clip.duration) < 0.1)))) return { ok: true, day, folder, dup: true, msg: `${file.name}: c'era già nella giornata del ${fmtDateLong(day)}.` };
-  const name = clip.startSrc === 'logger' ? 'iPhone (Logger)' : 'iPhone';
-  let cam = meta.cameras.find(c => c.name === name);
-  if (!cam) { cam = { id: uid('c'), name, offset: 0, telemetry: false, clips: [] }; meta.cameras.push(cam); }
+  const name = gopro ? 'GoPro' : clip.startSrc === 'logger' ? 'iPhone (Logger)' : 'iPhone';
+  const findCam = m => m.cameras.find(c => c.name === name) || (gopro ? m.cameras.find(c => c.clips.some(cl => cl.gpmd)) : null);
+  let cam = findCam(meta);
+  if (!cam) { cam = { id: uid('c'), name, offset: 0, telemetry: gopro, clips: [] }; meta.cameras.push(cam); }
   let moved = false;
   if (!(await Store.exists(`${folder}/${dest}`)) || (await Store.file(`${folder}/${dest}`)).size !== file.size) {
     // dalla cartella "Da importare" (stesso disco) provo a spostarlo: niente copia di molti GB
@@ -636,13 +641,18 @@ async function importPhoneVideo(file, onStep, handle = null) {
   clip.file = dest;
   // rileggo l'uscita adesso: durante una copia lunga qualcun altro può averla salvata
   const fresh = (await Store.readJSON(`${folder}/${SESSION_FILE}`)) || meta;
-  let fc = fresh.cameras.find(c => c.id === cam.id) || fresh.cameras.find(c => c.name === name);
+  let fc = fresh.cameras.find(c => c.id === cam.id) || findCam(fresh);
   if (!fc) { fc = cam; fc.clips = []; fresh.cameras.push(fc); }
   if (!fc.clips.some(cl => cl.file === dest)) fc.clips.push(clip);
+  if (gopro) {
+    // capitoli GX02, GX03… in fila al primo; la camera va risincronizzata con i video nuovi
+    chainChapters(fc.clips);
+    if (clip.startSrc !== 'gps') { delete fc.sync; delete fc.fineSync; for (const cl of fc.clips) delete cl.fine; }
+  }
   fc.clips.sort((a, b) => a.start - b.start);
   await Store.saveSession(folder, fresh);
   const t = new Date(clip.start);
-  return { ok: true, day, folder, moved, msg: `${file.name} → giornata del ${fmtDateLong(day)}, video delle ${p2(t.getHours())}:${p2(t.getMinutes())} (${fmtDur(clip.duration * 1000)}${clip.startSrc === 'logger' ? ', già allineato ai dati' : ''}).` };
+  return { ok: true, day, folder, moved, gopro: gopro && clip.startSrc !== 'gps', msg: `${file.name} → giornata del ${fmtDateLong(day)}, video delle ${p2(t.getHours())}:${p2(t.getMinutes())} (${fmtDur(clip.duration * 1000)}${clip.startSrc === 'logger' || clip.startSrc === 'gps' ? ', già allineato ai dati' : gopro ? ', da sincronizzare' : ''}).` };
 }
 
 /* video nella cartella "video" della giornata ma non nell'elenco (copiati a mano, o un salvataggio li ha persi):

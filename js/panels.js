@@ -11,6 +11,7 @@ const ICONS = {
   sound: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 7.5h3l4-3.5v12l-4-3.5h-3z"/><path d="M13.5 7a4 4 0 0 1 0 6"/></svg>',
   mute: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 7.5h3l4-3.5v12l-4-3.5h-3z"/><path d="M13.5 8l4 4M17.5 8l-4 4"/></svg>',
   full: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 7.5v-4h4M12.5 3.5h4v4M16.5 12.5v4h-4M7.5 16.5h-4v-4"/></svg>',
+  part: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2.5 15.5c2.5-6 4.5-1 7-5.5s3.5-5 8-6"/><path d="M6 3v14M14 3v14" stroke-dasharray="1.6 2"/></svg>',
   follow: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="3"/><path d="M10 2v3M10 15v3M2 10h3M15 10h3"/></svg>',
   view: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.3 12.3l5 5M6.5 8.5h4M8.5 6.5v4"/></svg>'
 };
@@ -669,6 +670,7 @@ class MapPanel {
     this.V = V; this.cfg = cfg; this.S = V.S;
     if (cfg.follow == null) cfg.follow = false;
     if (cfg.trail == null) cfg.trail = 60;
+    if (cfg.part == null) cfg.part = 'all';   // parte della traccia: all, sel (selezione I–O), custom (barra), around (intorno all'ora)
     this.el = h('div', { class: 'map-box' });
     const pos = this.S.pos;
     if (!pos) { this.el.append(h('div', { class: 'pnl-empty' }, this.S.live ? 'In attesa della posizione GPS dal telefono…' : 'Nessuna posizione GPS: carica un file con latitudine e longitudine (Vakaros, GPX, Cyclops) o accendi il GPS della GoPro.')); return; }
@@ -679,7 +681,109 @@ class MapPanel {
     const b = h('button', { class: 'icon-btn' + (this.cfg.follow ? ' on' : ''), title: 'Segui la barca', 'aria-label': 'Segui la barca', html: ICONS.follow });
     this.followBtn = b;
     b.onclick = () => { this.cfg.follow = !this.cfg.follow; b.classList.toggle('on', this.cfg.follow); this.V.layoutChanged(); this.V.requestDraw(); };
-    return [b];
+    const pb = h('button', { class: 'icon-btn' + (this.cfg.part !== 'all' ? ' on' : ''), title: 'Quale parte della traccia mostrare', 'aria-label': 'Parte della traccia', html: ICONS.part });
+    pb.onclick = e => this.partMenu(e.currentTarget);
+    this.partBtn = pb;
+    return [pb, b];
+  }
+  /* ---- parte della traccia ---- */
+  span() { const p = this.pts || []; return p.length ? [p[0][0], p[p.length - 1][0]] : [0, 0]; }
+  range() {
+    const [a0, b0] = this.span(), V = this.V, c = this.cfg;
+    let a = a0, b = b0;
+    if (c.part === 'sel' && V.inT != null && V.outT != null) { a = V.inT; b = V.outT; }
+    else if (c.part === 'custom' && c.from != null && c.to != null) { a = c.from; b = c.to; }
+    else if (c.part === 'around') { const w = (c.around || 5) * 60000, m = this.center != null ? this.center : V.t; a = m - w; b = m + w; }
+    a = Math.max(a, a0); b = Math.min(b, b0);
+    return b > a ? [a, b] : [a0, b0];
+  }
+  visible() { const [a, b] = this.range(); return (this.pts || []).filter(p => p[0] >= a && p[0] <= b); }
+  defaultCustom() {
+    const V = this.V;
+    if (V.inT != null && V.outT != null) return { from: V.inT, to: V.outT };
+    const [a, b] = this.span(), c = clamp(V.t, a, b), w = Math.min((b - a) / 4, 15 * 60000);
+    return { from: Math.max(a, c - w), to: Math.min(b, c + w) };
+  }
+  partMenu(anchor) {
+    const V = this.V, c = this.cfg, sel = V.inT != null && V.outT != null;
+    const mark = (on, l) => (on ? '✓ ' : '\u2003') + l;
+    const set = (part, extra = {}) => { Object.assign(c, { part }, extra); this.partChanged(true); };
+    menu(anchor, [
+      { head: 'Parte della traccia sulla mappa' },
+      { label: mark(c.part === 'all', 'Tutta l\'uscita'), run: () => set('all') },
+      { label: mark(c.part === 'sel', 'Solo la selezione I–O' + (sel ? ` (${fmtClock(V.inT)}–${fmtClock(V.outT)})` : ' (prima segnala con I e O)')), disabled: !sel, run: () => set('sel') },
+      { label: mark(c.part === 'custom', 'Scegli inizio e fine con la barra'), run: () => set('custom', c.from == null || c.to == null ? this.defaultCustom() : {}) },
+      { sep: true },
+      ...[2, 5, 15].map(m => ({ label: mark(c.part === 'around' && (c.around || 5) === m, `Solo intorno all'ora attuale: ±${m} min`), run: () => { this.center = V.t; set('around', { around: m }); } }))
+    ]);
+  }
+  partChanged(fit) {
+    if (!this.map) return;
+    const c = this.cfg;
+    if (c.part === 'custom' && (c.from == null || c.to == null)) Object.assign(c, this.defaultCustom());
+    if (this.partBtn) this.partBtn.classList.toggle('on', c.part !== 'all');
+    if (c.part === 'custom') { if (!this.bar) this.buildBar(); this.bar.hidden = false; this.barPos(); } else if (this.bar) this.bar.hidden = true;
+    this.drawTrack(); this.drawEvents();
+    if (fit) this.fitPart();
+    this.V.layoutChanged();
+  }
+  fitPart() {
+    const v = this.visible();
+    if (v.length > 1) this.map.fitBounds(L.latLngBounds(v.map(p => [p[1], p[2]])), { padding: [24, 24], maxZoom: 17 });
+  }
+  /* la selezione I–O è cambiata */
+  rangeChanged() { if (this.map && this.cfg.part === 'sel') { this.drawTrack(); this.drawEvents(); this.fitPart(); } }
+  /* barra con due maniglie per scegliere inizio e fine */
+  buildBar() {
+    const bar = h('div', { class: 'map-range' });
+    const track = h('div', { class: 'mr-track' }), fill = h('div', { class: 'mr-fill' }), now = h('div', { class: 'mr-now' });
+    const ha = h('div', { class: 'mr-h', title: 'Inizio', role: 'slider', 'aria-label': 'Inizio della parte di traccia' });
+    const hb = h('div', { class: 'mr-h', title: 'Fine', role: 'slider', 'aria-label': 'Fine della parte di traccia' });
+    track.append(fill, now, ha, hb);
+    const lab = h('span', { class: 'mr-lab' });
+    const fitB = h('button', { class: 'btn sm', title: 'Inquadra questa parte', onclick: () => this.fitPart() }, 'Inquadra');
+    const allB = h('button', { class: 'icon-btn', title: 'Torna a tutta la traccia', 'aria-label': 'Tutta la traccia', html: ICONS.close, onclick: () => { this.cfg.part = 'all'; this.partChanged(true); } });
+    bar.append(lab, track, fitB, allB);
+    this.el.append(bar);
+    L.DomEvent.disableClickPropagation(bar); L.DomEvent.disableScrollPropagation(bar);
+    const MIN = 10000;
+    const tAt = x => { const [a0, b0] = this.span(), r = track.getBoundingClientRect(); return a0 + clamp((x - r.left) / (r.width || 1), 0, 1) * (b0 - a0); };
+    this.barPos = () => {
+      const [a0, b0] = this.span(), c = this.cfg, k = v => clamp((v - a0) / ((b0 - a0) || 1), 0, 1) * 100;
+      ha.style.left = k(c.from) + '%'; hb.style.left = k(c.to) + '%';
+      fill.style.left = k(c.from) + '%'; fill.style.width = (k(c.to) - k(c.from)) + '%';
+      now.style.left = k(this.V.t) + '%';
+      lab.textContent = `${fmtClock(c.from)} – ${fmtClock(c.to)} · ${fmtDur(c.to - c.from)}`;
+    };
+    let raf = 0;
+    const redraw = () => { this.barPos(); if (!raf) raf = requestAnimationFrame(() => { raf = 0; this.drawTrack(); this.drawEvents(); }); };
+    const drag = (which, e) => {
+      e.preventDefault(); e.stopPropagation();
+      const el = e.currentTarget; el.setPointerCapture(e.pointerId);
+      const mv = ev => { const t = tAt(ev.clientX), c = this.cfg; if (which === 'a') c.from = Math.min(t, c.to - MIN); else c.to = Math.max(t, c.from + MIN); redraw(); };
+      const up = () => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); this.V.layoutChanged(); };
+      el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+    };
+    ha.addEventListener('pointerdown', e => drag('a', e));
+    hb.addEventListener('pointerdown', e => drag('b', e));
+    // clic sulla barra: sposto la maniglia più vicina
+    track.addEventListener('pointerdown', e => {
+      if (e.target === ha || e.target === hb) return;
+      const t = tAt(e.clientX), c = this.cfg;
+      if (Math.abs(t - c.from) < Math.abs(t - c.to)) c.from = Math.min(t, c.to - MIN); else c.to = Math.max(t, c.from + MIN);
+      redraw(); this.V.layoutChanged();
+    });
+    // da tastiera: frecce = 10 s, con Maiusc 1 min
+    for (const [hd, which] of [[ha, 'a'], [hb, 'b']]) {
+      hd.tabIndex = 0;
+      hd.addEventListener('keydown', e => {
+        const d = (e.shiftKey ? 60000 : 10000) * (e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0);
+        if (!d) return; e.preventDefault();
+        const c = this.cfg; if (which === 'a') c.from = Math.min(c.from + d, c.to - MIN); else c.to = Math.max(c.to + d, c.from + MIN);
+        redraw(); this.V.layoutChanged();
+      });
+    }
+    this.bar = bar;
   }
   init() {
     const S = this.S, pos = S.pos;
@@ -710,6 +814,7 @@ class MapPanel {
     this.el.append(this.legend);
     this.drawTrack();
     this.drawEvents();
+    if (this.cfg.part !== 'all') { this.center = this.V.t; this.partChanged(false); this.fitPart(); }
     // clic sulla traccia = vai a quell'istante. Solo se il clic è proprio sulla traccia (14 px),
     // non dopo aver trascinato la mappa e non nel doppio clic che serve a ingrandire.
     let clickTimer = 0, moved = false;
@@ -722,7 +827,7 @@ class MapPanel {
       clickTimer = setTimeout(() => {
         const P = this.map.latLngToContainerPoint(e.latlng);
         let best = null, bd = 14 * 14;
-        for (const p of this.pts) { const q = this.map.latLngToContainerPoint([p[1], p[2]]); const d = (q.x - P.x) ** 2 + (q.y - P.y) ** 2; if (d < bd) { bd = d; best = p; } }
+        for (const p of this.visible()) { const q = this.map.latLngToContainerPoint([p[1], p[2]]); const d = (q.x - P.x) ** 2 + (q.y - P.y) ** 2; if (d < bd) { bd = d; best = p; } }
         if (best) this.V.seek(best[0]);
       }, 260);
     });
@@ -747,7 +852,7 @@ class MapPanel {
   }
   drawTrack() {
     this.trackLayer.clearLayers();
-    const c = this.colorCh(), pts = this.pts;
+    const c = this.colorCh(), pts = this.visible();
     if (!pts.length) return;
     if (!c) { L.polyline(pts.map(p => [p[1], p[2]]), { color: seriesColor(0), weight: 2.5 }).addTo(this.trackLayer); this.legend.hidden = true; return; }
     // scala sequenziale (un solo colore, dal chiaro allo scuro) tra il 5° e il 95° percentile
@@ -766,12 +871,15 @@ class MapPanel {
     this.legend.hidden = false;
     this.legend.textContent = '';
     this.legend.append(h('div', null, `${c.name} (${c.unit})`), h('div', { class: 'ramp', style: { background: `linear-gradient(90deg, ${ramp.join(',')})` } }), h('div', { class: 'ends' }, h('span', null, fmtVal(c, lo)), h('span', null, fmtVal(c, hi))));
+    if (this.cfg.part !== 'all') { const [a, b] = this.range(); this.legend.append(h('div', { class: 'ends' }, `Solo ${fmtClock(a)}–${fmtClock(b)}`)); }
   }
   drawEvents() {
     if (!this.evLayer) return;
     this.evLayer.clearLayers();
     const pos = this.S.pos;
+    const [ra, rb] = this.cfg.part !== 'all' ? this.range() : [-Infinity, Infinity];
     for (const ev of this.S.meta.events) {
+      if (ev.t < ra || ev.t > rb) continue;
       const a = interp(pos.lat, ev.t), b = interp(pos.lon, ev.t);
       if (!isFinite(a) || !isFinite(b)) continue;
       const m = L.circleMarker([a, b], { radius: 5, color: theme() === 'dark' ? '#0e1012' : '#fff', weight: 2, fillColor: eventColor(ev.type), fillOpacity: 1 }).addTo(this.evLayer);
@@ -782,6 +890,12 @@ class MapPanel {
   eventsChanged() { this.drawEvents(); }
   update(t) {
     if (!this.map) return;
+    // "intorno all'ora attuale": la parte segue il tempo (ridisegno al più ogni 0,4 s)
+    if (this.cfg.part === 'around' && (this.center == null || Math.abs(t - this.center) >= 1000)) {
+      const now = performance.now();
+      if (!this._partDraw || now - this._partDraw > 400 || Math.abs(t - this.center) > 60000) { this._partDraw = now; this.center = t; this.drawTrack(); this.drawEvents(); }
+    }
+    if (this.bar && !this.bar.hidden) this.barPos();
     const pos = this.S.pos, a = interp(pos.lat, t), b = interp(pos.lon, t);
     if (!isFinite(a) || !isFinite(b)) { this.boat.setOpacity(0.25); return; }
     this.boat.setOpacity(1);
