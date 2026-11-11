@@ -626,14 +626,18 @@ async function importPhoneVideo(file, onStep, handle = null, days = null) {
   const findCam = m => m.cameras.find(c => c.name === name) || (gopro ? m.cameras.find(c => c.clips.some(cl => cl.gpmd)) : null);
   let cam = findCam(meta);
   if (!cam) { cam = { id: uid('c'), name, offset: 0, telemetry: gopro, clips: [] }; meta.cameras.push(cam); }
-  let moved = false;
+  let moved = false, moveErr = '';
   if (!(await Store.exists(`${folder}/${dest}`)) || (await Store.file(`${folder}/${dest}`)).size !== file.size) {
     // dalla cartella "Da importare" (stesso disco) provo a spostarlo: niente copia di molti GB
     if (handle && typeof handle.move === 'function') {
-      try { await handle.move(await Store.dir(`${folder}/video`, true), dest.split('/').pop()); moved = true; } catch (e) { moved = false; }
+      // prima con lo stesso nome (come per "Importati", che funziona sul disco esterno), poi col nome nuovo
+      const vdir = await Store.dir(`${folder}/video`, true), target = dest.split('/').pop();
+      for (const tryMove of target === file.name ? [() => handle.move(vdir), () => handle.move(vdir, target)] : [() => handle.move(vdir, target)]) {
+        try { await tryMove(); moved = true; break; } catch (e) { moveErr = errMsg(e); }
+      }
     }
     if (!moved) {
-      onStep && onStep(`copio ${file.name} (${fmtBytes(file.size)})…`);
+      onStep && onStep(`copio ${file.name} (${fmtBytes(file.size)})${moveErr ? ': spostarlo non è riuscito' : ''}…`);
       let shown = 0;
       await Store.copyIn(file, `${folder}/${dest}`, (p) => { if (onStep && p - shown >= 0.1) { shown = p; onStep(`copio ${file.name}: ${Math.round(p * 100)}%`); } });
     }
@@ -652,7 +656,7 @@ async function importPhoneVideo(file, onStep, handle = null, days = null) {
   fc.clips.sort((a, b) => a.start - b.start);
   await Store.saveSession(folder, fresh);
   const t = new Date(clip.start);
-  return { ok: true, day, folder, moved, gopro: gopro && clip.startSrc !== 'gps', msg: `${file.name} → giornata del ${fmtDateLong(day)}, video delle ${p2(t.getHours())}:${p2(t.getMinutes())} (${fmtDur(clip.duration * 1000)}${clip.startSrc === 'logger' || clip.startSrc === 'gps' ? ', già allineato ai dati' : gopro ? ', da sincronizzare' : ''}).` };
+  return { ok: true, day, folder, moved, gopro: gopro && clip.startSrc !== 'gps', msg: `${file.name} → giornata del ${fmtDateLong(day)}, video delle ${p2(t.getHours())}:${p2(t.getMinutes())} (${fmtDur(clip.duration * 1000)}${clip.startSrc === 'logger' || clip.startSrc === 'gps' ? ', già allineato ai dati' : gopro ? ', da sincronizzare' : ''})${moveErr && handle ? `. Non sono riuscito a spostarlo (${moveErr}): l'ho copiato, l'originale resta in «Importati» e puoi cancellarlo` : ''}.` };
 }
 
 /* video nella cartella "video" della giornata ma non nell'elenco (copiati a mano, o un salvataggio li ha persi):
