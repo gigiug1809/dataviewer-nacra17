@@ -60,11 +60,13 @@ class FFT {
   }
 }
 
+/* v42 (13 novembre 2026, "voce un po' metallica"): riduzione più dolce e guadagni lisciati nel tempo e in frequenza,
+   meno acuti. Prima: vento floor -12, over 1,3, shelf +7, peak +3; forte -20, 1,8, +9, +4. */
 const WIND_PRESETS = {
-  // vento: taglio a 200 Hz, rumore abbassato al massimo di 12 dB, +7 dB di chiarezza
-  vento: { hp: 200, floor: -12, over: 1.3, shelf: 7, peak: 3, makeup: 10 },
-  // forte: taglio a 320 Hz, rumore giù fino a 20 dB, più chiarezza (la voce può suonare un po' più "sottile")
-  forte: { hp: 320, floor: -20, over: 1.8, shelf: 9, peak: 4, makeup: 13 }
+  // vento: taglio a 200 Hz, rumore abbassato al massimo di 9 dB, +5 dB di chiarezza
+  vento: { hp: 200, floor: -9, over: 1.1, shelf: 5, peak: 2, makeup: 9 },
+  // forte: taglio a 320 Hz, rumore giù fino a 15 dB, più chiarezza (la voce resta un po' più "sottile")
+  forte: { hp: 320, floor: -15, over: 1.4, shelf: 7, peak: 3, makeup: 12 }
 };
 
 class WindClean {
@@ -72,7 +74,7 @@ class WindClean {
     const p = WIND_PRESETS[preset] || WIND_PRESETS.vento;
     this.fs = fs; this.p = p;
     this.pre = [new Biquad('hp', fs, p.hp), new Biquad('hp', fs, p.hp), new Biquad('lshelf', fs, 600, Math.SQRT1_2, -4)];
-    this.post = [new Biquad('hshelf', fs, 1800, 0.8, p.shelf), new Biquad('peak', fs, 3000, 1.0, p.peak), new Biquad('lp', fs, 7500), new Biquad('lp', fs, 7500)];
+    this.post = [new Biquad('hshelf', fs, 2000, 0.6, p.shelf), new Biquad('peak', fs, 3000, 0.8, p.peak), new Biquad('lp', fs, 7500), new Biquad('lp', fs, 7500)];
     // STFT: 1024 punti (21 ms a 48 kHz), passo 256
     const N = this.N = fs > 60000 ? 2048 : 1024, H = this.H = N / 4, K = N / 2 + 1;
     this.fft = new FFT(N);
@@ -82,7 +84,7 @@ class WindClean {
     this.outQ = new Float64Array(N); this.outRead = 0; this.outAvail = 0;
     this.re = new Float64Array(N); this.im = new Float64Array(N);
     this.Ps = new Float64Array(K); this.noise = new Float64Array(K).fill(1e-9); this.prevS = new Float64Array(K);
-    this.G = new Float64Array(K).fill(1); this.Gs = new Float64Array(K);
+    this.G = new Float64Array(K).fill(1); this.Gs = new Float64Array(K); this.Gt = new Float64Array(K).fill(1);
     // minimo su ~1,5 s in 8 pezzi
     this.V = Math.max(4, Math.round(1.5 * fs / H / 8)); this.U = 8; this.vi = 0;
     this.subMin = []; for (let u = 0; u < this.U; u++) this.subMin.push(new Float64Array(K).fill(Infinity));
@@ -118,14 +120,21 @@ class WindClean {
     // guadagno di Wiener con SNR "a priori" (decision directed): niente rumore musicale
     for (let k = 0; k < K; k++) {
       const P = re[k] * re[k] + im[k] * im[k], n = noise[k] * over + 1e-12;
-      const post = P / n, prio = 0.96 * (this.prevS[k] / n) + 0.04 * Math.max(post - 1, 0);
+      const post = P / n, prio = 0.98 * (this.prevS[k] / n) + 0.02 * Math.max(post - 1, 0);
       let g = prio / (1 + prio);
       if (g < floor) g = floor;
       G[k] = g;
       this.prevS[k] = g * g * P;
     }
-    // un po' di lisciatura tra frequenze vicine
-    for (let k = 0; k < K; k++) this.Gs[k] = (G[Math.max(0, k - 1)] + 2 * G[k] + G[Math.min(K - 1, k + 1)]) / 4;
+    // lisciatura tra frequenze vicine (5 bin, ~190 Hz) e nel tempo: il guadagno sale subito ma scende piano (~40 ms),
+    // così niente "gorgoglii" tra un istante e l'altro: è quello che fa sembrare metallica la voce
+    const Gt = this.Gt;
+    for (let k = 0; k < K; k++) {
+      const a = G[Math.max(0, k - 2)], b = G[Math.max(0, k - 1)], c = G[Math.min(K - 1, k + 1)], d = G[Math.min(K - 1, k + 2)];
+      const g = (a + 2 * b + 3 * G[k] + 2 * c + d) / 9;
+      Gt[k] = g >= Gt[k] ? g : 0.88 * Gt[k] + 0.12 * g;
+      this.Gs[k] = Gt[k];
+    }
     for (let k = 0; k < K; k++) {
       const g = this.Gs[k]; re[k] *= g; im[k] *= g;
       if (k > 0 && k < N / 2) { re[N - k] = re[k]; im[N - k] = -im[k]; }

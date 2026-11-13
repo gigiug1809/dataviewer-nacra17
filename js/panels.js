@@ -65,7 +65,7 @@ const AudioFx = {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
     this.ctx = new AC({ latencyHint: 'playback' });
-    this.ready = this.ctx.audioWorklet ? this.ctx.audioWorklet.addModule('js/vento-worklet.js?v=1') : Promise.reject(new Error('AudioWorklet non disponibile'));
+    this.ready = this.ctx.audioWorklet ? this.ctx.audioWorklet.addModule('js/vento-worklet.js?v=2') : Promise.reject(new Error('AudioWorklet non disponibile'));
     this.ready.catch(() => {});
     // il browser fa partire l'audio solo dopo un gesto: al primo clic o tasto la riattivo
     const wake = () => { if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {}); };
