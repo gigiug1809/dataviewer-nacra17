@@ -54,6 +54,50 @@ function channelPicker(S, selected, opts = {}) {
   return { el: box, get: () => sel.filter(id => S.byId.has(id)) };
 }
 
+/* =================== AUDIO DEI VIDEO =================== */
+/* Audio originale o col filtro vento (js/vento-worklet.js, scritto qui: niente librerie).
+   Il filtro passa per la Web Audio: una sola AudioContext per tutta l'app, che parte al primo clic o tasto. */
+const AUDIO_MODES = { orig: 'Originale', vento: 'Filtro vento', forte: 'Filtro vento forte' };
+const AudioFx = {
+  ctx: null, ready: null,
+  context() {
+    if (this.ctx) return this.ctx;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    this.ctx = new AC({ latencyHint: 'playback' });
+    this.ready = this.ctx.audioWorklet ? this.ctx.audioWorklet.addModule('js/vento-worklet.js?v=1') : Promise.reject(new Error('AudioWorklet non disponibile'));
+    this.ready.catch(() => {});
+    // il browser fa partire l'audio solo dopo un gesto: al primo clic o tasto la riattivo
+    const wake = () => { if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {}); };
+    document.addEventListener('pointerdown', wake, true); document.addEventListener('keydown', wake, true);
+    return this.ctx;
+  },
+  /* collega il video al filtro scelto; la prima volta il video passa per sempre dalla Web Audio */
+  async route(p, mode) {
+    const ctx = this.context();
+    if (!ctx) throw new Error('Web Audio non disponibile');
+    if (!p.fx) p.fx = { src: ctx.createMediaElementSource(p.video), node: null, mode: null };
+    const fx = p.fx;
+    if (mode !== 'orig' && !fx.node) {
+      await this.ready;
+      fx.node = new AudioWorkletNode(ctx, 'filtro-vento', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { mode } });
+      fx.node.connect(ctx.destination);
+    }
+    if (fx.mode === mode) return;
+    try { fx.src.disconnect(); } catch (e) {}
+    if (mode === 'orig') fx.src.connect(ctx.destination);
+    else { fx.node.port.postMessage({ mode }); fx.src.connect(fx.node); }
+    fx.mode = mode;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  },
+  release(p) {
+    if (!p.fx) return;
+    try { p.fx.src.disconnect(); } catch (e) {}
+    try { p.fx.node && p.fx.node.disconnect(); } catch (e) {}
+    p.fx = null;
+  }
+};
+
 /* =================== VIDEO =================== */
 class VideoPanel {
   constructor(V, cfg) {
@@ -62,6 +106,8 @@ class VideoPanel {
     this.el = h('div', { class: 'vid-box' });
     this.video = h('video', { playsinline: true, muted: true, preload: 'auto' });
     this.video.muted = cfg.muted !== false;
+    if (!AUDIO_MODES[cfg.audio]) cfg.audio = 'vento'; // di serie col filtro vento (GoPro: il vento copre le voci)
+    if (!this.video.muted) this.applyAudio();
     this.tag = h('div', { class: 'vid-tag' });
     this.msg = h('div', { class: 'vid-msg', hidden: true });
     this.el.append(this.video, this.tag, this.msg);
@@ -136,9 +182,38 @@ class VideoPanel {
   }
   cam() { return this.S.meta.cameras.find(c => c.id === this.cfg.cam); }
   title() { const c = this.cam(); return c ? `Video · ${c.name}` : 'Video'; }
+  /* audio: spento, originale, filtro vento o filtro vento forte */
+  async applyAudio() {
+    if (this.video.muted) return;
+    try { await AudioFx.route(this, this.cfg.audio); }
+    catch (e) {
+      // filtro non disponibile: si sente l'audio originale
+      if (this.cfg.audio !== 'orig') { this.cfg.audio = 'orig'; toast('Il filtro vento non funziona in questo browser: audio originale.'); }
+      if (this.fx) AudioFx.route(this, 'orig').catch(() => {});
+    }
+  }
+  audioTitle() { return this.video.muted ? 'Audio spento' : `Audio: ${AUDIO_MODES[this.cfg.audio].toLowerCase()}`; }
+  audioMenu(btn) {
+    const cur = this.video.muted ? 'off' : this.cfg.audio;
+    const set = m => {
+      if (m === 'off') this.video.muted = true;
+      else { this.cfg.audio = m; this.video.muted = false; this.applyAudio(); }
+      this.cfg.muted = this.video.muted;
+      btn.innerHTML = this.video.muted ? ICONS.mute : ICONS.sound; btn.title = this.audioTitle();
+      this.V.layoutChanged();
+    };
+    const it = (m, label) => ({ label: (cur === m ? '✓ ' : '\u2003 ') + label, run: () => set(m) });
+    menu(btn, [
+      { head: 'Audio di questo video' },
+      it('off', 'Spento'),
+      it('orig', 'Originale'),
+      it('vento', 'Filtro vento: meno vento, voci più chiare'),
+      it('forte', 'Filtro vento forte: per le raffiche, voce più sottile')
+    ]);
+  }
   headButtons() {
-    const mute = h('button', { class: 'icon-btn', title: 'Audio', 'aria-label': 'Audio', html: this.video.muted ? ICONS.mute : ICONS.sound });
-    mute.onclick = () => { this.video.muted = !this.video.muted; this.cfg.muted = this.video.muted; mute.innerHTML = this.video.muted ? ICONS.mute : ICONS.sound; this.V.layoutChanged(); };
+    const mute = h('button', { class: 'icon-btn', title: this.audioTitle(), 'aria-label': 'Audio', html: this.video.muted ? ICONS.mute : ICONS.sound });
+    mute.onclick = e => { e.stopPropagation(); this.audioMenu(mute); };
     const vb = h('button', { class: 'icon-btn', title: 'Ruota, specchia, zoom', 'aria-label': 'Visione del video', html: ICONS.view });
     vb.onclick = e => { e.stopPropagation(); this.viewMenu(vb); };
     return [
@@ -289,7 +364,7 @@ class VideoPanel {
     return { el: h('label', { class: 'f' }, 'Camera', sel), apply: () => { this.cfg.cam = sel.value; this.clip = null; this.applyView(); } };
   }
   resize() { this.applyView(); }
-  destroy() { document.removeEventListener('fullscreenchange', this._fs); this.loading = null; this.video.pause(); this.video.removeAttribute('src'); this.video.load(); }
+  destroy() { document.removeEventListener('fullscreenchange', this._fs); this.loading = null; this.video.pause(); this.video.removeAttribute('src'); this.video.load(); AudioFx.release(this); }
 }
 function fmtOffsetShort(sec) { const m = Math.floor(sec / 60), s = sec - m * 60; return `${m}:${s.toFixed(1).padStart(4, '0')}`; }
 
